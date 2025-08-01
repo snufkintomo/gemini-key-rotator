@@ -1,0 +1,29 @@
+name = "gemini-key-rotator" # Choose a name for your worker
+main = "src/index.ts"  # Assuming your file is src/index.ts
+compatibility_date = "2024-05-06" # Use a recent date
+
+#如果有custom domain放在這
+#routes = [
+#  { pattern = "yourcustomdomain", custom_domain = true }
+#]
+
+# Define environment variables (less sensitive)
+[vars]
+#放入你的gemini proxy url
+GEMINI_API_BASE_URL = "https://xxx.deno.dev/" # Optional
+#放入你自定的api token（俾你的api用）
+ACCESS_TOKEN = "yourownaccesstoken" # Optional
+#Gemini API Keys, 以逗號分隔
+API_KEYS = "key1,key2,key3,key4,key5,..."
+
+# Define secrets (for sensitive data like API keys)
+# You'll set these using `wrangler secret put <KEY_NAME>`
+# Example:
+# wrangler secret put API_KEYS
+# (Paste your comma-separated keys or JSON array when prompted)
+# wrangler secret put ACCESS_TOKEN
+# (Paste your access token if using one)
+
+#[observability]
+#enabled = true
+#head_sampling_rate = 1 # optional. default = 1.
