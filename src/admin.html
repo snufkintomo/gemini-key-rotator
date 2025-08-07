@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gemini Key Rotator - Admin</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --background-start: #f7f8fa;
+            --background-end: #e9edf2;
+            --card-background: #ffffff;
+            --text-primary: #2d3748;
+            --text-secondary: #4a5568;
+            --accent-color: #4299e1;
+            --accent-color-hover: #2b6cb0;
+            --danger-color: #e53e3e;
+            --danger-color-hover: #c53030;
+            --success-bg: #c6f6d5;
+            --error-bg: #fed7d7;
+            --code-bg: #edf2f7;
+            --border-color: #e2e8f0;
+        }
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            line-height: 1.6;
+            color: var(--text-primary);
+            background: linear-gradient(135deg, var(--background-start), var(--background-end));
+            margin: 0;
+            padding: 2rem;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 700px;
+            width: 100%;
+            background-color: var(--card-background);
+            padding: 2.5rem;
+            border-radius: 12px;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+        }
+        h1, h2, h3, h4 {
+            color: var(--text-primary);
+            font-weight: 700;
+        }
+        h1 {
+            font-size: 2rem;
+            text-align: center;
+            margin-bottom: 0.5rem;
+        }
+        h2 {
+            font-size: 1.5rem;
+            text-align: center;
+            color: var(--text-secondary);
+            font-weight: 400;
+            margin-bottom: 2rem;
+        }
+        label {
+            font-weight: 500;
+            margin-bottom: 0.5rem;
+            display: block;
+        }
+        input[type="text"], textarea {
+            width: 100%;
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+            font-size: 1rem;
+            transition: border-color 0.2s, box-shadow 0.2s;
+            box-sizing: border-box;
+        }
+        input[type="text"]:focus, textarea:focus {
+            outline: none;
+            border-color: var(--accent-color);
+            box-shadow: 0 0 0 3px rgba(66, 153, 225, 0.5);
+        }
+        textarea {
+            min-height: 140px;
+            resize: vertical;
+        }
+        .button-group {
+            display: flex;
+            gap: 1rem;
+        }
+        button {
+            flex-grow: 1;
+            background-color: var(--accent-color);
+            color: white;
+            padding: 12px 18px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background-color 0.2s, transform 0.1s;
+        }
+        button:hover {
+            background-color: var(--accent-color-hover);
+            transform: translateY(-1px);
+        }
+        #deleteButton {
+            background-color: var(--danger-color);
+        }
+        #deleteButton:hover {
+            background-color: var(--danger-color-hover);
+        }
+        #result {
+            margin-top: 2rem;
+            padding: 1.5rem;
+            border-radius: 8px;
+            background-color: var(--success-bg);
+            display: none;
+            animation: fadeIn 0.5s ease-in-out;
+        }
+        #result.error {
+            background-color: var(--error-bg);
+        }
+        code {
+            background-color: var(--code-bg);
+            padding: 0.2em 0.4em;
+            margin: 0;
+            font-size: 0.9em;
+            border-radius: 3px;
+            font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace;
+        }
+        pre > code {
+            display: block;
+            padding: 1rem;
+            border-radius: 6px;
+            overflow-x: auto;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Gemini Key Rotator</h1>
+        <h2>Create or Update Your Credentials</h2>
+    <p>Provide your desired Access Token and the corresponding Gemini API keys. If the token already exists, its keys will be updated.</p>
+    
+    <form id="keyForm">
+        <label for="accessToken">Access Token:</label><br>
+        <input type="text" id="accessToken" name="accessToken" required style="width: 100%; padding: 8px; border-radius: 6px; border: 1px solid #ccc; font-size: 1rem;">
+        <br><br>
+        <label for="apiKeys">API Keys:</label><br>
+        <textarea id="apiKeys" name="apiKeys" required placeholder="AIzaSy...&#10;AIzaSy...&#10;AIzaSy..."></textarea>
+        <br><br>
+        <div class="button-group">
+            <button type="submit">Save Credentials</button>
+            <button type="button" id="deleteButton">Delete</button>
+        </div>
+    </form>
+
+    <div id="result"></div>
+    </div>
+
+    <script>
+        const form = document.getElementById('keyForm');
+        const resultDiv = document.getElementById('result');
+        const accessTokenInput = document.getElementById('accessToken');
+        const apiKeysTextarea = document.getElementById('apiKeys');
+
+        let fetchTimeout;
+        accessTokenInput.addEventListener('input', () => {
+            clearTimeout(fetchTimeout);
+            fetchTimeout = setTimeout(async () => {
+                const token = accessTokenInput.value.trim();
+                if (token.length >= 10) {
+                    try {
+                        const response = await fetch(`/api/credentials?access_token=${encodeURIComponent(token)}`);
+                        if (response.ok) {
+                            const data = await response.json();
+                            if (data.api_keys) {
+                                // Format keys with newlines for better readability
+                                apiKeysTextarea.value = data.api_keys.replace(/,/g, '\n');
+                            }
+                        }
+                    } catch (error) {
+                        console.error('Error fetching keys:', error);
+                    }
+                }
+            }, 500); // Debounce for 500ms
+        });
+
+        form.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const accessToken = document.getElementById('accessToken').value;
+            const apiKeys = document.getElementById('apiKeys').value;
+            resultDiv.style.display = 'none';
+            resultDiv.className = '';
+
+            try {
+                const response = await fetch('/api/credentials', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ access_token: accessToken, api_keys: apiKeys })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'An unknown error occurred.');
+                }
+
+                const baseUrl = window.location.origin;
+                const openAIUrl = `${baseUrl}/v1beta/openai/chat/completions`;
+                const googleUrl = `${baseUrl}/v1beta/models/gemini-pro:generateContent`;
+                const googleUrlWithKey = `${googleUrl}?key=${data.access_token}`;
+
+                resultDiv.innerHTML = `
+                    <h2>Success!</h2>
+                    <p>Your credentials have been saved for Access Token:</p>
+                    <p><code>${data.access_token}</code></p>
+                    <hr style="margin: 1.5rem 0;">
+                    <h3>How to Use</h3>
+                    <p>You can now make requests to the Gemini API through this worker. Use your Access Token in one of the following ways.</p>
+                    
+                    <h4>1. OpenAI-Style (Bearer Token)</h4>
+                    <p>Use this for compatibility with OpenAI libraries.</p>
+                    <pre><code style="display: block; white-space: pre-wrap; word-break: break-all;">curl -X POST \\\n  -H "Authorization: Bearer ${data.access_token}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model": "gemini-pro", "messages": [{"role": "user", "content": "Explain how a transformer model works"}]}' \\\n  "${openAIUrl}"</code></pre>
+
+                    <h4>2. Google-Style (Header)</h4>
+                    <pre><code style="display: block; white-space: pre-wrap; word-break: break-all;">curl -X POST \\\n  -H "x-goog-api-key: ${data.access_token}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"contents":[{"parts":[{"text":"Explain how a transformer model works"}]}]}' \\\n  "${googleUrl}"</code></pre>
+
+                    <h4>3. Google-Style (Query Parameter)</h4>
+                    <pre><code style="display: block; white-space: pre-wrap; word-break: break-all;">curl -X POST \\\n  -H "Content-Type: application/json" \\\n  -d '{"contents":[{"parts":[{"text":"Explain how a transformer model works"}]}]}' \\\n  "${googleUrlWithKey}"</code></pre>
+                `;
+            } catch (error) {
+                resultDiv.className = 'error';
+                resultDiv.innerHTML = `<strong>Error:</strong> ${error.message}`;
+            }
+            
+            resultDiv.style.display = 'block';
+        });
+
+        document.getElementById('deleteButton').addEventListener('click', async () => {
+            const accessToken = accessTokenInput.value.trim();
+            if (!accessToken) {
+                alert('Please enter an Access Token to delete.');
+                return;
+            }
+
+            if (!confirm(`Are you sure you want to delete all credentials for the token "${accessToken}"? This action cannot be undone.`)) {
+                return;
+            }
+
+            resultDiv.style.display = 'none';
+            resultDiv.className = '';
+
+            try {
+                const response = await fetch('/api/credentials', {
+                    method: 'DELETE',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ access_token: accessToken })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'An unknown error occurred.');
+                }
+
+                resultDiv.innerHTML = `<strong>Success:</strong> ${data.message}`;
+                accessTokenInput.value = '';
+                apiKeysTextarea.value = '';
+
+            } catch (error) {
+                resultDiv.className = 'error';
+                resultDiv.innerHTML = `<strong>Error:</strong> ${error.message}`;
+            }
+
+            resultDiv.style.display = 'block';
+        });
+    </script>
+</body>
+</html>
