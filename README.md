@@ -6,9 +6,9 @@ This project provides a robust API key rotator for the Google Gemini API, built 
 
 - **Stateful Key Rotation**: Rotates through a list of Gemini API keys, ensuring each key is used in sequence.
 - **Persistent Cooldowns**: If a key is exhausted (e.g., hits a rate limit), it's put on a temporary cooldown that is respected by all worker instances.
-- **User-Managed Credentials**: A built-in admin panel allows users to create, update, and delete their own access tokens and associated API keys.
+- **Secure Admin Panel**: A built-in admin panel, protected by a single `ADMIN_ACCESS_TOKEN`, allows for the secure management of user access tokens and their associated API keys.
 - **Multiple Authentication Styles**: Supports OpenAI-style Bearer Tokens, Google-style `x-goog-api-key` headers, and `?key=` query parameters for flexible integration.
-- **Secure**: All sensitive credentials are stored in a Cloudflare D1 database, not in the code, making the project safe to publish on GitHub.
+- **Secure by Default**: All sensitive credentials are stored in a Cloudflare D1 database. The admin panel is protected by a login system that uses a secure, encrypted, HttpOnly session cookie.
 
 ## Setup and Deployment
 
@@ -39,24 +39,31 @@ npx wrangler login
 
 ### 4. Create a D1 Database
 
-Create a new D1 database to store the credentials. Give it a name, for example, `gemini-key-rotator-db`.
+Create a new D1 database to store the credentials.
 
 ```bash
-npx wrangler d1 create gemini-key-rotator-db
+npx wrangler d1 create gemini-key-rotator
 ```
 
 Wrangler will output the `database_id`. Copy this ID.
 
 ### 5. Configure `wrangler.toml`
 
-Open the `wrangler.toml` file and update the `[[d1_databases]]` section with the `database_id` you just received. You should also set the `database_name` to the one you chose.
+Open the `wrangler.toml` file and update the `[[d1_databases]]` section with the `database_id` you just received.
 
 ```toml
 [[d1_databases]]
 binding = "DB" # This binding name is used in the code
-database_name = "gemini-key-rotator-db"
+database_name = "gemini-key-rotator"
 database_id = "your-database-id-here"
 preview_database_id = "your-database-id-here"
+```
+
+Next, set your `ADMIN_ACCESS_TOKEN` in the `[vars]` section. This token will be your password for the admin panel and will also be used to encrypt session cookies. **Choose a strong, unique value.**
+
+```toml
+[vars]
+ADMIN_ACCESS_TOKEN = "your-secret-token" # Replace with your actual token
 ```
 
 ### 6. Create the Database Table
@@ -64,7 +71,7 @@ preview_database_id = "your-database-id-here"
 Run the following command to create the necessary `api_credentials` table in your new database.
 
 ```bash
-npx wrangler d1 execute gemini-key-rotator-db --command="CREATE TABLE api_credentials (access_token TEXT PRIMARY KEY, api_keys TEXT NOT NULL, current_key_index INTEGER DEFAULT 0 NOT NULL, key_states TEXT);"
+npx wrangler d1 execute gemini-key-rotator --command="CREATE TABLE IF NOT EXISTS api_credentials (access_token TEXT PRIMARY KEY, api_keys TEXT NOT NULL, current_key_index INTEGER DEFAULT 0, key_states TEXT DEFAULT '[]', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);"
 ```
 
 ### 7. (Optional) Configure a Custom API Proxy
@@ -96,7 +103,9 @@ To manage your API keys, navigate to the admin panel by adding `/admin` to your 
 
 **`https://<your-worker-url>/admin`**
 
-On this page, you can:
+You will be prompted to log in with the `ADMIN_ACCESS_TOKEN` you configured in `wrangler.toml`.
+
+On the admin page, you can:
 - **Create**: Enter a new, unique Access Token and paste your Gemini API keys (one per line or comma-separated) to create a new credential set.
 - **Update**: Enter an existing Access Token to load and edit the associated API keys.
 - **Delete**: Enter an existing Access Token and click the "Delete" button to remove the credentials.
