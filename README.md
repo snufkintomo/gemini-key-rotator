@@ -67,7 +67,18 @@ Run the following command to create the necessary `api_credentials` table in you
 npx wrangler d1 execute gemini-key-rotator-db --command="CREATE TABLE api_credentials (access_token TEXT PRIMARY KEY, api_keys TEXT NOT NULL, current_key_index INTEGER DEFAULT 0 NOT NULL, key_states TEXT);"
 ```
 
-### 7. Deploy the Worker
+### 7. (Optional) Configure a Custom API Proxy
+
+If you are using your own proxy for the Gemini API, you can configure it in `wrangler.toml`. Open the file and set the `GEMINI_API_BASE_URL` variable.
+
+```toml
+[vars]
+GEMINI_API_BASE_URL = "https://your-proxy-url.com/"
+```
+
+If you are not using a custom proxy, you can leave this variable empty.
+
+### 8. Deploy the Worker
 
 Deploy the worker to your Cloudflare account.
 
