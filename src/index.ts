@@ -330,13 +330,45 @@ export default {
         redirect: 'follow'
       });
 
-      let response = await doFetch();
+      const isStreaming = requestUrl.pathname.includes(":stream") || requestUrl.pathname.includes("streamGenerateContent");
+
+      const doFetchWithContentRetry = async (): Promise<Response> => {
+        const maxContentRetries = 3;
+        let response: Response | undefined = undefined;
+
+        for (let i = 0; i < maxContentRetries; i++) {
+          response = await doFetch();
+
+          if (response.ok && !isStreaming) {
+            const clonedResponse = response.clone();
+            try {
+              const body = await clonedResponse.json() as GeminiResponse;
+              // Check for valid content, not just presence of candidates array
+              if (body.candidates && body.candidates.length > 0 && body.candidates[0].content) {
+                return response; // Good response
+              }
+              console.log(`Response content invalid, retry ${i + 1}/${maxContentRetries}`);
+            } catch (e) {
+              console.log(`Response JSON parse failed, retry ${i + 1}/${maxContentRetries}`, e);
+            }
+            // Wait before retrying
+            if (i < maxContentRetries - 1) {
+              await new Promise(res => setTimeout(res, 1000 * (i + 1)));
+            }
+          } else {
+            return response; // Not a 200 OK or is streaming, return immediately
+          }
+        }
+        return response!; // Return last response after all retries
+      };
+
+      let response = await doFetchWithContentRetry();
 
       // Retry for transient errors
       const maxRetries = 3;
       for (let i = 0; i < maxRetries && [502, 524].includes(response.status); i++) {
         await new Promise(res => setTimeout(res, 1000 * (i + 1)));
-        response = await doFetch();
+        response = await doFetchWithContentRetry();
       }
 
       // 4. Retry logic for exhausted keys
@@ -354,7 +386,7 @@ export default {
         apiKey = apiKeys[keyIndexToUse];
         attemptCount++;
         updateAuth(apiKey);
-        response = await doFetch();
+        response = await doFetchWithContentRetry();
       }
 
       // 5. Update the key index and states in D1 for the next request
