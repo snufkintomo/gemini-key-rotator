@@ -334,16 +334,60 @@ export default {
 
       const doFetchWithContentRetry = async (): Promise<Response> => {
         const maxContentRetries = 3;
-        let response: Response | undefined = undefined;
+        let lastResponse: Response | undefined = undefined;
 
         for (let i = 0; i < maxContentRetries; i++) {
-          response = await doFetch();
+          const response = await doFetch();
+          lastResponse = response;
 
-          if (response.ok && !isStreaming) {
+          if (!response.ok) {
+            // Not a 200 OK, so no need to check content.
+            // The outer retry loops for 5xx or 429 will handle this.
+            return response;
+          }
+
+          // If we are here, response.ok is true.
+          if (isStreaming) {
+            if (!response.body) {
+              console.log(`Streaming response body is null, retry ${i + 1}/${maxContentRetries}`);
+              if (i < maxContentRetries - 1) await new Promise(res => setTimeout(res, 1000));
+              continue;
+            }
+
+            const [stream1, stream2] = response.body.tee();
+            const reader = stream1.getReader();
+            
+            try {
+              const { value, done } = await reader.read();
+              
+              if (done) {
+                // Stream ended immediately. This is an empty response.
+                console.log(`Streaming response was empty, retry ${i + 1}/${maxContentRetries}`);
+                if (i < maxContentRetries - 1) await new Promise(res => setTimeout(res, 1000));
+                continue; // Retry
+              }
+
+              // We have the first chunk, that's good enough. Let the client consume the rest.
+              // We must return a new response with the second stream.
+              return new Response(stream2, {
+                status: response.status,
+                statusText: response.statusText,
+                headers: response.headers,
+              });
+
+            } catch (e) {
+              console.error(`Error reading first chunk of stream, retry ${i + 1}/${maxContentRetries}`, e);
+              if (i < maxContentRetries - 1) await new Promise(res => setTimeout(res, 1000));
+              continue; // Retry
+            } finally {
+               reader.releaseLock();
+               stream1.cancel().catch(() => {}); // Cancel the inspection stream
+            }
+          } else {
+            // Non-streaming logic
             const clonedResponse = response.clone();
             try {
               const body = await clonedResponse.json() as GeminiResponse;
-              // Check for valid content, not just presence of candidates array
               if (body.candidates && body.candidates.length > 0 && body.candidates[0].content) {
                 return response; // Good response
               }
@@ -351,15 +395,16 @@ export default {
             } catch (e) {
               console.log(`Response JSON parse failed, retry ${i + 1}/${maxContentRetries}`, e);
             }
-            // Wait before retrying
-            if (i < maxContentRetries - 1) {
-              await new Promise(res => setTimeout(res, 1000 * (i + 1)));
-            }
-          } else {
-            return response; // Not a 200 OK or is streaming, return immediately
+          }
+          
+          // If we reach here, it means a retry is needed for the non-streaming case.
+          if (i < maxContentRetries - 1) {
+            await new Promise(res => setTimeout(res, 1000 * (i + 1)));
           }
         }
-        return response!; // Return last response after all retries
+        
+        // If all retries fail, return the last response we received.
+        return lastResponse!;
       };
 
       let response = await doFetchWithContentRetry();
