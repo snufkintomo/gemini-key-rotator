@@ -388,7 +388,7 @@ export default {
             const clonedResponse = response.clone();
             try {
               const body = await clonedResponse.json() as GeminiResponse;
-              if (body.candidates && body.candidates.length > 0 && body.candidates[0].content) {
+              if (body.candidates && body.candidates.length > 0 && body.candidates[0].content && body.candidates[0].content.parts && body.candidates[0].content.parts.length > 0) {
                 return response; // Good response
               }
               console.log(`Response content invalid, retry ${i + 1}/${maxContentRetries}`);
