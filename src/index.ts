@@ -447,8 +447,9 @@ export default {
         ctx.waitUntil(updateStmt.bind(keyStatesJson, accessToken).run());
       }
 
-      if ([401, 403, 429].includes(response.status)) {
-        return new Response(`Error: All available API keys are exhausted or invalid. (Last Status: ${response.status})`, { status: 429 });
+      if ([401, 403, 429, 502, 524].includes(response.status)) {
+        //return new Response(`Error: All available API keys are exhausted or invalid. (Last Status: ${response.status})`, { status: 429 });
+        return response;
       }
 
       const resHeaders = new Headers(response.headers);
