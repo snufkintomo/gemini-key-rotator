@@ -403,22 +403,33 @@ export default {
           }
         }
         
-        // If all retries fail, return the last response we received.
-        return lastResponse!;
+        // If all retries fail, return a structured JSON 503 error.
+        console.error("All content retries failed. Returning a JSON 503 error.");
+        const errorResponse = {
+          error: {
+            code: 503,
+            message: "The server failed to get a valid response from the upstream API after multiple retries.",
+            status: "SERVICE_UNAVAILABLE"
+          }
+        };
+        return new Response(JSON.stringify(errorResponse), {
+          status: 503,
+          headers: { 'Content-Type': 'application/json;charset=UTF-8' }
+        });
       };
 
       let response = await doFetchWithContentRetry();
 
       // Retry for transient errors
       const maxRetries = 3;
-      for (let i = 0; i < maxRetries && [502, 524].includes(response.status); i++) {
+      for (let i = 0; i < maxRetries && [500, 502, 503, 524].includes(response.status); i++) {
         await new Promise(res => setTimeout(res, 1000 * (i + 1)));
         response = await doFetchWithContentRetry();
       }
 
       // 4. Retry logic for exhausted keys
       let attemptCount = 1;
-      while ([401, 403, 429].includes(response.status) && attemptCount < apiKeys.length) {
+      while ([401, 403, 429, 500, 502, 503, 524].includes(response.status) && attemptCount < apiKeys.length) {
         const cooldown = response.status === 429 ? (2 * 60 * 1000) : (1 * 60 * 1000);
         keyStates[keyIndexToUse] = { exhaustedUntil: Date.now() + cooldown };
 
@@ -447,7 +458,7 @@ export default {
         ctx.waitUntil(updateStmt.bind(keyStatesJson, accessToken).run());
       }
 
-      if ([401, 403, 429, 502, 524].includes(response.status)) {
+      if ([401, 403, 429, 500, 502, 503, 524].includes(response.status)) {
         //return new Response(`Error: All available API keys are exhausted or invalid. (Last Status: ${response.status})`, { status: 429 });
         return response;
       }
