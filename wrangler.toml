@@ -1,0 +1,60 @@
+name = "gemini-key-rotator" # Choose a name for your worker
+main = "src/index.ts"  # Assuming your file is src/index.ts
+compatibility_date = "2024-05-06" # Use a recent date
+
+routes = [
+  { pattern = "", custom_domain = true }
+]
+
+# Define environment variables (less sensitive)
+# -------------------
+# If you have a custom Gemini API proxy, enter the base URL here.
+# Otherwise, leave it empty.
+[vars]
+#GEMINI_API_BASE_URL = "" # Optional
+GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com"
+CLOUDFLARE_AI_GATEWAY_ID = "" # Replace with your Cloudflare AI Gateway ID
+CLOUDFLARE_AI_GATEWAY_NAME = "" # Replace with your Cloudflare AI Gateway Name
+ADMIN_ACCESS_TOKEN = "" # Replace with your actual token
+
+[[rules]]
+type = "Text"
+globs = ["**/*.html"]
+fallthrough = false
+
+
+# D1 Database Binding
+# -------------------
+# This section binds a D1 database to your worker.
+# You must create a D1 database and update the configuration below.
+#
+# 1. Create the database:
+#    npx wrangler d1 create <YOUR_DATABASE_NAME>
+#
+# 2. Update the database_id and database_name below with the values from the command output.
+[[d1_databases]]
+binding = "DB"
+database_name = "gemini-key-rotator"
+database_id = ""
+preview_database_id = "e"
+
+[durable_objects]
+bindings = [
+  { name = "KEY_ROTATOR", class_name = "KeyRotator" }
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["KeyRotator"]
+
+# Define secrets (for sensitive data like API keys)
+# You'll set these using `wrangler secret put <KEY_NAME>`
+# Example:
+# wrangler secret put API_KEYS
+# (Paste your comma-separated keys or JSON array when prompted)
+# wrangler secret put ACCESS_TOKEN
+# (Paste your access token if using one)
+
+#[observability]
+#enabled = true
+#head_sampling_rate = 1 # optional. default = 1.
