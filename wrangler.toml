@@ -3,7 +3,7 @@ main = "src/index.ts"  # Assuming your file is src/index.ts
 compatibility_date = "2024-05-06" # Use a recent date
 
 routes = [
-  { pattern = "", custom_domain = true }
+  { pattern = "gemini.snufkinto.dpdns.org", custom_domain = true }
 ]
 
 # Define environment variables (less sensitive)
@@ -11,11 +11,11 @@ routes = [
 # If you have a custom Gemini API proxy, enter the base URL here.
 # Otherwise, leave it empty.
 [vars]
-#GEMINI_API_BASE_URL = "" # Optional
+#GEMINI_API_BASE_URL = "https://snufkinto-geminiproxy.deno.dev" # Optional
 GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com"
-CLOUDFLARE_AI_GATEWAY_ID = "" # Replace with your Cloudflare AI Gateway ID
-CLOUDFLARE_AI_GATEWAY_NAME = "" # Replace with your Cloudflare AI Gateway Name
-ADMIN_ACCESS_TOKEN = "" # Replace with your actual token
+ADMIN_ACCESS_TOKEN = "ttl123" # Replace with your actual token
+CLOUDFLARE_AI_GATEWAY_ID = "d7d76a4e6b7555059c1b651349fca592" # Replace with your Cloudflare AI Gateway ID
+CLOUDFLARE_AI_GATEWAY_NAME = "gemini" # Replace with your Cloudflare AI Gateway Name
 
 [[rules]]
 type = "Text"
@@ -35,8 +35,8 @@ fallthrough = false
 [[d1_databases]]
 binding = "DB"
 database_name = "gemini-key-rotator"
-database_id = ""
-preview_database_id = "e"
+database_id = "ea11ab2c-71d2-48fa-85cb-5eed868e8223"
+preview_database_id = "ea11ab2c-71d2-48fa-85cb-5eed868e8223"
 
 [durable_objects]
 bindings = [
@@ -55,6 +55,6 @@ new_sqlite_classes = ["KeyRotator"]
 # wrangler secret put ACCESS_TOKEN
 # (Paste your access token if using one)
 
-#[observability]
-#enabled = true
-#head_sampling_rate = 1 # optional. default = 1.
+[observability]
+enabled = true
+head_sampling_rate = 1 # optional. default = 1.

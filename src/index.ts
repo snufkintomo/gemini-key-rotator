@@ -67,7 +67,8 @@ export default {
     if (requestUrl.pathname === '/admin/login') {
         if (request.method === 'POST') {
             try {
-                const { token } = await request.json<{ token: string }>();
+                const clonedRequest = request.clone();
+                const { token } = await clonedRequest.json<{ token: string }>();
                 if (token === env.ADMIN_ACCESS_TOKEN) {
                     if (!env.ADMIN_ACCESS_TOKEN) {
                         console.error("Security configuration error: ADMIN_ACCESS_TOKEN must be set.");
@@ -143,7 +144,8 @@ export default {
           // POST: Create or update credentials
           if (request.method === 'POST') {
             try {
-              const body = await request.json<{ access_token: string; api_keys: string }>();
+              const clonedRequest = request.clone();
+              const body = await clonedRequest.json<{ access_token: string; api_keys: string }>();
               const { access_token: rawAccessToken, api_keys: keysInput } = body;
               const accessToken = rawAccessToken?.trim();
 
@@ -216,21 +218,31 @@ export default {
     try {
       let accessToken: string | null = null;
       let openAIMode = false;
-      let googleHeaderKeyMode = false;
+      let googleMode = false;
+      let claudeMode = false;
 
       const authHeader = request.headers.get("Authorization");
-      if (authHeader && authHeader.startsWith("Bearer ")) {
+      const xApiKeyHeader = request.headers.get("x-api-key");
+
+      if (authHeader && authHeader.startsWith("Bearer sk-ant-api01-")) {
+        accessToken = authHeader.substring(7).trim();
+        claudeMode = true;
+      } else if (xApiKeyHeader) {
+        accessToken = xApiKeyHeader.trim();
+        claudeMode = true;
+      } else if (authHeader && authHeader.startsWith("Bearer ")) {
         accessToken = authHeader.substring(7).trim();
         openAIMode = true;
       } else {
         const headerKey = request.headers.get("x-goog-api-key");
         if (headerKey) {
           accessToken = headerKey.trim();
-          googleHeaderKeyMode = true;
+          googleMode = true;
         } else {
           const keyParam = requestUrl.searchParams.get("key");
           if (keyParam) {
             accessToken = keyParam.trim();
+            googleMode = true;
           }
         }
       }
@@ -246,8 +258,10 @@ export default {
       forwardRequest.headers.set("X-Access-Token", accessToken);
       if (openAIMode) {
         forwardRequest.headers.set("X-Auth-Mode", "openai");
-      } else if (googleHeaderKeyMode) {
+      } else if (googleMode) {
         forwardRequest.headers.set("X-Auth-Mode", "google");
+      } else if (claudeMode) {
+        forwardRequest.headers.set("X-Auth-Mode", "claude");
       }
       
       const response = await stub.fetch(forwardRequest);
@@ -296,7 +310,7 @@ function getCorsHeaders(request: Request): Record<string, string> {
         return {
             "Access-Control-Allow-Origin": origin,
             "Access-Control-Allow-Methods": "GET, HEAD, POST, OPTIONS, DELETE",
-            "Access-Control-Allow-Headers": "Content-Type, Authorization, x-goog-api-key, X-Access-Token",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, x-goog-api-key, x-api-key, X-Access-Token",
             "Access-Control-Max-Age": "86400",
         };
     }

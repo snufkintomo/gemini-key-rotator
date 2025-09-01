@@ -1,4 +1,13 @@
 import type { ChatCompletion, ChatCompletionCreateParams } from 'openai/resources/chat/completions';
+import type {
+	ClaudeCompletionRequest,
+	ClaudeCompletionResponseChunk,
+	ClaudeMessage,
+	ClaudeMessagePart,
+	ClaudeTool,
+	GeminiResponse,
+	GeminiCandidate,
+} from './types.d';
 
 // --- Types ---
 interface Env {
@@ -6,18 +15,29 @@ interface Env {
 	GEMINI_API_BASE_URL?: string;
 	CLOUDFLARE_AI_GATEWAY_ID: string;
 	CLOUDFLARE_AI_GATEWAY_NAME: string;
-  }
-  
+	// No CLAUDE_API_BASE_URL needed as we are transforming to Gemini
+}
+
 interface KeyState {
 	exhaustedUntil?: { [model: string]: number };
 	invalid?: boolean;
-  }
-  
-  interface ApiCredentials {
+}
+
+interface ApiCredentials {
 	api_keys: string;
 	current_key_index: number;
 	key_states: string | null; // JSON string of KeyState[]
-  }
+}
+
+interface GeminiModel {
+	name: string;
+	description: string;
+	[key: string]: any;
+}
+
+interface GeminiModelsList {
+	models: GeminiModel[];
+}
   
 // --- Configuration ---
 const CLOUDFLARE_AI_GATEWAY_BASE = (env: Env) => `https://gateway.ai.cloudflare.com/v1/${env.CLOUDFLARE_AI_GATEWAY_ID}/${env.CLOUDFLARE_AI_GATEWAY_NAME}`;
@@ -31,6 +51,25 @@ const API_VERSION = 'v1beta';
 	  this.name = this.constructor.name;
 	  this.status = status;
 	}
+  }
+
+  // Function to map Claude models to Gemini models
+  function getGeminiModelForClaude(claudeModel: string): string {
+	// If the model is already a Gemini model, use it directly
+	if (claudeModel.startsWith('gemini-')) {
+		return claudeModel;
+	}
+	if (claudeModel.includes('opus')) {
+		return 'gemini-2.5-flash';
+	}
+	if (claudeModel.includes('sonnet')) {
+		return 'gemini-2.5-flash';
+	}
+	if (claudeModel.includes('haiku')) {
+		return 'gemini-2.5-flash';
+	}
+	// Default to a general-purpose Gemini model if no specific mapping is found
+	return 'gemini-2.5-flash';
   }
   
   const makeHeaders = (apiKey: string, more?: Record<string, string>) => ({
@@ -49,6 +88,7 @@ const API_VERSION = 'v1beta';
 	}
   
 	async fetch(request: Request): Promise<Response> {
+	  const clonedRequest = request.clone();
 	  const requestUrl = new URL(request.url);
 	  const accessToken = request.headers.get("X-Access-Token");
 	  const authMode = request.headers.get("X-Auth-Mode");
@@ -153,6 +193,8 @@ const API_VERSION = 'v1beta';
 		const pathname = requestUrl.pathname;
 		if (authMode === "openai") {
 		  return this.handleOpenAI(requestToProxy, apiKey);
+		} else if (authMode === "claude") {
+			return this.handleClaude(requestToProxy, apiKey);
 		}
   
 		let apiBaseUrl: string;
@@ -176,12 +218,11 @@ const API_VERSION = 'v1beta';
   
 		if (authMode === "google") {
 		  forwardHeaders.set("x-goog-api-key", apiKey);
-		} else {
-		  if (targetUrl.searchParams.has("key")) {
-			targetUrl.searchParams.delete("key");
-		  }
-		  targetUrl.searchParams.set("key", apiKey);
 		}
+		if (targetUrl.searchParams.has("key")) {
+			targetUrl.searchParams.delete("key");
+		 }
+		//targetUrl.searchParams.set("key", apiKey);
   
 		const methodCanHaveBody = ['POST', 'PUT', 'PATCH'].includes(requestToProxy.method.toUpperCase());
 		const isStreaming = requestUrl.pathname.includes(":stream") || requestUrl.pathname.includes("streamGenerateContent");
@@ -192,13 +233,13 @@ const API_VERSION = 'v1beta';
 			headers: forwardHeaders,
 			body: methodCanHaveBody && requestToProxy.body ? requestToProxy.body : null,
 			redirect: 'follow',
-			cf: requestToProxy.cf as any // Preserve the cf property and cast to any
+			cf: requestToProxy.cf as CfProperties<unknown> // Preserve the cf property and cast to CfProperties<unknown>
 		  }),
 		  isStreaming
 		);
 	  };
   
-	  let response = await doProxy(apiKey, request.clone());
+	  let response = await doProxy(apiKey, clonedRequest.clone() as Request<unknown, CfProperties<unknown>>);
   
 	  let attemptCount = 1;
 	  while ([400, 401, 403, 429, 500, 502, 503, 524].includes(response.status) && attemptCount < apiKeys.length) {
@@ -229,7 +270,7 @@ const API_VERSION = 'v1beta';
 		keyIndexToUse = nextKeyIndex;
 		apiKey = apiKeys[keyIndexToUse];
 		attemptCount++;
-		response = await doProxy(apiKey, request.clone());
+		response = await doProxy(apiKey, clonedRequest.clone() as Request<unknown, CfProperties<unknown>>);
 	  }
   
 	  if (keyIndexToUse !== null) {
@@ -328,8 +369,8 @@ const API_VERSION = 'v1beta';
 		if (modelsMatch || isModelsList) {
 			if (request.method !== 'GET') throw new HttpError('Method not allowed', 405);
 			const modelId = modelsMatch ? modelsMatch[1] : undefined;
-			const transform = request.headers.get("X-Auth-Mode") === "openai";
-			return this.handleModels(apiKey, modelId, transform).catch(errHandler);
+			const authMode = request.headers.get("X-Auth-Mode") || "openai";
+			return this.handleModels(apiKey, modelId, authMode).catch(errHandler);
 		}
 		throw new HttpError('Not Found', 404);
 	  } catch (e) {
@@ -337,7 +378,7 @@ const API_VERSION = 'v1beta';
 	  }
 	}
 
-	async handleModels(apiKey: string, modelId?: string, transform: boolean = true) {
+	async handleModels(apiKey: string, modelId?: string, authMode: string = "openai") {
 		const apiBaseUrl = this.env.GEMINI_API_BASE_URL || `${CLOUDFLARE_AI_GATEWAY_BASE}/google-ai-studio`;
 		const apiVersionToUse = this.env.GEMINI_API_BASE_URL ? API_VERSION : 'v1'; // Use 'v1' for AI Gateway
 		const url = modelId
@@ -348,35 +389,68 @@ const API_VERSION = 'v1beta';
 			headers: makeHeaders(apiKey),
 		});
 
-		if (!transform) {
+		if (authMode === "google") {
 			return response;
 		}
 
 		let responseBody: BodyInit | null = response.body;
 		if (response.ok) {
+			const originalBody = await response.json() as GeminiModel | GeminiModelsList;
 			if (modelId) {
-				const model = JSON.parse(await response.text());
-				responseBody = JSON.stringify({
-					id: model.name.replace('models/', ''),
-					object: 'model',
-					created: 0,
-					owned_by: 'google',
-				});
-			} else {
-				const { models } = JSON.parse(await response.text());
-				responseBody = JSON.stringify(
-					{
-						object: 'list',
-						data: models.map((model: any) => ({
+				const model = originalBody as GeminiModel;
+				switch (authMode) {
+					case "openai":
+						responseBody = JSON.stringify({
 							id: model.name.replace('models/', ''),
 							object: 'model',
 							created: 0,
 							owned_by: 'google',
-						})),
-					},
-					null,
-					'  '
-				);
+						});
+						break;
+					case "claude":
+						responseBody = JSON.stringify({
+							id: model.name.replace('models/', ''),
+							type: 'model',
+							description: model.description,
+							name: model.name,
+							display_name: model.name,
+						});
+						break;
+					default:
+						responseBody = JSON.stringify(model);
+				}
+			} else {
+				const { models } = originalBody as GeminiModelsList;
+				switch (authMode) {
+					case "openai":
+						responseBody = JSON.stringify(
+							{
+								object: 'list',
+								data: models.map((model: any) => ({
+									id: model.name.replace('models/', ''),
+									object: 'model',
+									created: 0,
+									owned_by: 'google',
+								})),
+							},
+							null,
+							'  '
+						);
+						break;
+					case "claude":
+						responseBody = JSON.stringify({
+							data: models.map((model: any) => ({
+								id: model.name.replace('models/', ''),
+								type: 'model',
+								description: model.description,
+								name: model.name,
+								display_name: model.name,
+							})),
+						});
+						break;
+					default:
+						responseBody = JSON.stringify({ models });
+				}
 			}
 		}
 		return new Response(responseBody, response);
@@ -647,6 +721,7 @@ const API_VERSION = 'v1beta';
 					(item as any).role = 'model';
 					break;
 				case 'user':
+				case 'developer': // Treat 'developer' role as 'user' for content transformation
 					break;
 				default:
 					throw new HttpError(`Unknown message role: "${item.role}"`, 400);
@@ -714,12 +789,13 @@ const API_VERSION = 'v1beta';
 			}
 		}
 		if (req.tool_choice) {
-			const allowed_function_names = req.tool_choice?.type === 'function' ? [req.tool_choice?.function?.name] : undefined;
-			if (allowed_function_names || typeof req.tool_choice === 'string') {
+			if (req.tool_choice === 'none') {
+				tool_config = { function_calling_config: { mode: 'NONE' } };
+			} else if (typeof req.tool_choice === 'object' && req.tool_choice.type === 'function') {
 				tool_config = {
 					function_calling_config: {
-						mode: allowed_function_names ? 'ANY' : req.tool_choice.toUpperCase(),
-						allowed_function_names,
+						mode: 'ANY',
+						allowed_function_names: [req.tool_choice.function.name],
 					},
 				};
 			}
@@ -880,4 +956,489 @@ const API_VERSION = 'v1beta';
 		}
 		controller.enqueue('data: [DONE]\n\n');
 	}
-  }
+
+	// --- Claude Compatibility Layer ---
+
+	private async transformClaudeMessagesToGeminiContents(
+		messages: ClaudeMessage[]
+	): Promise<{ contents: any[]; system_instruction?: any }> {
+		const contents: any[] = [];
+		let system_instruction: any;
+
+		for (const item of messages) {
+			if (item.role === 'user' || item.role === 'assistant') {
+				const parts: any[] = [];
+				if (typeof item.content === 'string') {
+					parts.push({ text: item.content });
+				} else {
+					for (const part of item.content) {
+						switch (part.type) {
+							case 'text':
+								parts.push({ text: part.text });
+								break;
+							case 'image':
+								if (part.source?.type === 'base64') {
+									parts.push({
+										inlineData: {
+											mimeType: part.source.media_type,
+											data: part.source.data,
+										},
+									});
+								}
+								break;
+							case 'tool_use':
+								parts.push({
+									functionCall: {
+										name: part.input?.name, // Claude's tool_use.input is the function call
+										args: part.input,
+									},
+								});
+								break;
+							case 'tool_result':
+								parts.push({
+									functionResponse: {
+										name: part.tool_use_id, // Claude's tool_result.tool_use_id maps to Gemini's function name
+										response: part.content,
+									},
+								});
+								break;
+							default:
+								console.warn('Unknown Claude message part type:', part.type);
+								break;
+						}
+					}
+				}
+				contents.push({
+					role: item.role === 'assistant' ? 'model' : 'user',
+					parts: parts,
+				});
+			} else if (item.role === 'system') {
+				system_instruction = { parts: [{ text: item.content as string }] };
+			}
+		}
+		return { contents, system_instruction };
+	}
+
+	private transformClaudeToolsToGeminiTools(
+		claudeTools?: ClaudeTool[],
+		claudeToolChoice?: ClaudeCompletionRequest['tool_choice']
+	): { tools?: any[]; tool_config?: any } {
+		const geminiTools: any[] = [];
+		if (claudeTools && claudeTools.length > 0) {
+			geminiTools.push({
+				function_declarations: claudeTools.map((tool) => ({
+					name: tool.name,
+					description: tool.description,
+					parameters: tool.input_schema,
+				})),
+			});
+		}
+
+		let tool_config: any;
+		if (claudeToolChoice) {
+			if (claudeToolChoice.type === 'auto') {
+				tool_config = { function_calling_config: { mode: 'AUTO' } };
+			} else if (claudeToolChoice.type === 'tool' && claudeToolChoice.tool?.name) {
+				tool_config = {
+					function_calling_config: {
+						mode: 'ANY',
+						allowed_function_names: [claudeToolChoice.tool.name],
+					},
+				};
+			} else if (claudeToolChoice.type === 'none') {
+				tool_config = { function_calling_config: { mode: 'NONE' } };
+			}
+		}
+
+		return { tools: geminiTools.length > 0 ? geminiTools : undefined, tool_config };
+	}
+
+	private async transformClaudeToGeminiRequest(
+		claudeReq: ClaudeCompletionRequest & { thinking?: any }
+	): Promise<any> {
+		const { contents, system_instruction } = await this.transformClaudeMessagesToGeminiContents(
+			claudeReq.messages
+		);
+		const { tools, tool_config } = this.transformClaudeToolsToGeminiTools(
+			claudeReq.tools,
+			claudeReq.tool_choice
+		);
+
+		const generationConfig: any = {};
+		if (claudeReq.max_tokens) {
+			generationConfig.maxOutputTokens = claudeReq.max_tokens;
+		}
+		if (claudeReq.temperature) {
+			generationConfig.temperature = claudeReq.temperature;
+		}
+		if (claudeReq.top_p) {
+			generationConfig.topP = claudeReq.top_p;
+		}
+		if (claudeReq.top_k) {
+			generationConfig.topK = claudeReq.top_k;
+		}
+		if (claudeReq.stop_sequences && claudeReq.stop_sequences.length > 0) {
+			generationConfig.stopSequences = claudeReq.stop_sequences;
+		}
+
+		// Handle Claude's thinking parameter
+		if (claudeReq.thinking && claudeReq.thinking.type === 'enabled') {
+			if (claudeReq.thinking.budget_tokens) {
+				generationConfig.thinkingConfig = {
+					thinkingBudget: claudeReq.thinking.budget_tokens
+				};
+			} else {
+				generationConfig.thinkingConfig = {
+					thinkingBudget: 1024 // Default budget
+				};
+			}
+		}
+
+		const harmCategory = [
+			'HARM_CATEGORY_HATE_SPEECH',
+			'HARM_CATEGORY_SEXUALLY_EXPLICIT',
+			'HARM_CATEGORY_DANGEROUS_CONTENT',
+			'HARM_CATEGORY_HARASSMENT',
+			'HARM_CATEGORY_CIVIC_INTEGRITY',
+		];
+
+		const safetySettings = harmCategory.map((category) => ({
+			category,
+			threshold: 'BLOCK_NONE',
+		}));
+
+		return {
+			contents,
+			system_instruction,
+			generationConfig: Object.keys(generationConfig).length > 0 ? generationConfig : undefined,
+			safetySettings,
+			tools,
+			tool_config,
+		};
+	}
+
+	private transformGeminiToClaudeResponse(
+		geminiRes: GeminiResponse,
+		model: string,
+		id: string,
+		thinking?: string
+	): Response {
+		const claudeContent: ClaudeMessagePart[] = [];
+		let stopReason: string | null = null;
+		let stopSequence: string | null = null;
+		let accumulatedThinking = thinking || '';
+
+		if (geminiRes.candidates && geminiRes.candidates.length > 0) {
+			const candidate = geminiRes.candidates[0]; // Claude expects a single response
+			if (candidate.content?.parts) {
+				for (const part of candidate.content.parts) {
+					if (part.text) {
+						claudeContent.push({ type: 'text', text: part.text });
+					} else if (part.functionCall) {
+						claudeContent.push({
+							type: 'tool_use',
+							id: `toolu_${this.generateId()}`,
+							name: part.functionCall.name,
+							input: part.functionCall.args,
+						});
+					} else if ((part as any).toolCode && typeof (part as any).toolCode === 'string') {
+						// Accumulate toolCode as thinking content
+						accumulatedThinking += (part as any).toolCode;
+					} else if ((part as any).reasoning && typeof (part as any).reasoning === 'string') {
+						// Check for reasoning field which might contain thinking content
+						accumulatedThinking += (part as any).reasoning;
+					} else if ((part as any).thought && typeof (part as any).thought === 'string') {
+						// Check for thought field
+						accumulatedThinking += (part as any).thought;
+					} else if ((part as any).thinking && typeof (part as any).thinking === 'string') {
+						// Check for thinking field
+						accumulatedThinking += (part as any).thinking;
+					}
+				}
+			}
+
+			// Map Gemini finishReason to Claude stop_reason
+			switch (candidate.finishReason) {
+				case 'STOP':
+					stopReason = 'end_turn';
+					break;
+				case 'MAX_TOKENS':
+					stopReason = 'max_tokens';
+					break;
+				case 'SAFETY':
+				case 'RECITATION':
+					stopReason = 'stop_sequence';
+					if (claudeContent.length === 0) {
+						claudeContent.push({
+							type: 'text',
+							text: `[Content blocked due to safety concerns: ${candidate.finishReason}]`,
+						});
+					}
+					break;
+				case 'OTHER':
+				default:
+					stopReason = 'end_turn';
+					break;
+			}
+		}
+
+		// Add thinking content if present
+		if (accumulatedThinking) {
+			claudeContent.unshift({ type: 'thinking', thinking: accumulatedThinking });
+		}
+
+		const usage = {
+			input_tokens: geminiRes.usageMetadata?.promptTokenCount || 0,
+			output_tokens: geminiRes.usageMetadata?.candidatesTokenCount || 0,
+		};
+
+		const claudeResponse = {
+			id: id,
+			type: 'message',
+			role: 'assistant',
+			model: model,
+			content: claudeContent,
+			stop_reason: stopReason,
+			stop_sequence: stopSequence,
+			usage: usage,
+		};
+
+		return new Response(JSON.stringify(claudeResponse), {
+			status: 200,
+			headers: { 'Content-Type': 'application/json' },
+		});
+	}
+
+	private transformGeminiToClaudeStreamStart(this: any, controller: any) {
+		controller.enqueue(
+			`event: message_start\ndata: ${JSON.stringify({
+				type: 'message_start',
+				message: {
+					id: this.id,
+					type: 'message',
+					role: 'assistant',
+					model: this.model,
+					content: [],
+					stop_reason: null,
+					stop_sequence: null,
+					usage: { input_tokens: 0, output_tokens: 0 },
+				},
+			})}\n\n`
+		);
+		controller.enqueue(`event: ping\ndata: ${JSON.stringify({ type: 'ping' })}\n\n`);
+	}
+
+	private transformGeminiToClaudeStream(this: any, geminiChunk: any, controller: any) {
+		const reasonsMap: Record<string, string> = {
+			STOP: 'end_turn',
+			MAX_TOKENS: 'max_tokens',
+			SAFETY: 'stop_sequence',
+			RECITATION: 'stop_sequence',
+			OTHER: 'end_turn',
+		};
+
+		const { candidates, usageMetadata } = geminiChunk;
+
+		if (candidates && candidates.length > 0) {
+			const candidate = candidates[0];
+			const { content, finishReason } = candidate;
+
+			if (content?.parts) {
+				for (const part of content.parts) {
+					if (part.text) {
+						if (!this.shared.sentTextBlock) {
+							controller.enqueue(
+								`event: content_block_start\ndata: ${JSON.stringify({
+									type: 'content_block_start',
+									index: this.shared.contentIndex || 0,
+									content_block: { type: 'text', text: '' },
+								})}\n\n`
+							);
+							this.shared.sentTextBlock = true;
+						}
+						controller.enqueue(
+							`event: content_block_delta\ndata: ${JSON.stringify({
+								type: 'content_block_delta',
+								index: this.shared.contentIndex || 0,
+								delta: { type: 'text_delta', text: part.text },
+							})}\n\n`
+						);
+					} else if (part.functionCall) {
+						const toolIndex = this.shared.contentIndex || 0;
+						controller.enqueue(
+							`event: content_block_start\ndata: ${JSON.stringify({
+								type: 'content_block_start',
+								index: toolIndex,
+								content_block: {
+									type: 'tool_use',
+									id: `toolu_${this.generateId()}`,
+									name: part.functionCall.name,
+									input: part.functionCall.args,
+								},
+							})}\n\n`
+						);
+						controller.enqueue(
+							`event: content_block_stop\ndata: ${JSON.stringify({
+								type: 'content_block_stop',
+								index: toolIndex,
+							})}\n\n`
+						);
+						this.shared.contentIndex = (this.shared.contentIndex || 0) + 1;
+					} else if ((part as any).toolCode) {
+						// Send thinking content as streaming delta
+						if (!this.shared.sentThinkingBlock) {
+							const thinkingIndex = this.shared.contentIndex || 0;
+							controller.enqueue(
+								`event: content_block_start\ndata: ${JSON.stringify({
+									type: 'content_block_start',
+									index: thinkingIndex,
+									content_block: { type: 'thinking', thinking: '' },
+								})}\n\n`
+							);
+							this.shared.sentThinkingBlock = true;
+						}
+						const thinkingIndex = this.shared.contentIndex || 0;
+						controller.enqueue(
+							`event: content_block_delta\ndata: ${JSON.stringify({
+								type: 'content_block_delta',
+								index: thinkingIndex,
+								delta: { type: 'thinking_delta', thinking: part.toolCode },
+							})}\n\n`
+						);
+						// Accumulate thinking for final response
+						this.shared.thinking = (this.shared.thinking || '') + part.toolCode;
+					}
+				}
+			}
+
+			if (finishReason) {
+				this.shared.stopReason = reasonsMap[finishReason] || finishReason.toLowerCase();
+			}
+		}
+
+		if (usageMetadata) {
+			this.shared.usage = {
+				output_tokens: usageMetadata.candidatesTokenCount || 0,
+			};
+		}
+	}
+
+	private transformGeminiToClaudeStreamFlush(this: any, controller: any) {
+		if (this.shared.sentContentStart) {
+			controller.enqueue(
+				`event: content_block_stop\ndata: ${JSON.stringify({
+					type: 'content_block_stop',
+					index: 0,
+				})}\n\n`
+			);
+		}
+
+		const finalDelta = {
+			type: 'message_delta',
+			delta: { stop_reason: this.shared.stopReason || 'end_turn' },
+			usage: this.shared.usage || { output_tokens: 0 },
+		};
+
+		controller.enqueue(`event: message_delta\ndata: ${JSON.stringify(finalDelta)}\n\n`);
+
+		controller.enqueue(
+			`event: message_stop\ndata: ${JSON.stringify({
+				type: 'message_stop',
+			})}\n\n`
+		);
+	}
+
+	private async handleClaude(request: Request, apiKey: string): Promise<Response> {
+		const requestUrl = new URL(request.url);
+		const pathname = requestUrl.pathname;
+
+		const errHandler = (err: Error) => {
+			console.error(err);
+			const status = err instanceof HttpError ? err.status : 500;
+			return new Response(err.message ?? 'Internal Server Error', { status });
+		};
+
+		try {
+			if (pathname.endsWith('/messages')) {
+				if (request.method !== 'POST') throw new HttpError('Method not allowed', 405);
+
+				const claudeReq: ClaudeCompletionRequest = await request.json();
+				const geminiReqBody = await this.transformClaudeToGeminiRequest(claudeReq);
+
+				const claudeModel = claudeReq.model;
+				const geminiModel = getGeminiModelForClaude(claudeModel);
+				const TASK = claudeReq.stream ? 'streamGenerateContent' : 'generateContent';
+				const apiBaseUrl = this.env.GEMINI_API_BASE_URL || `${CLOUDFLARE_AI_GATEWAY_BASE}/google-ai-studio`;
+				const apiVersionToUse = this.env.GEMINI_API_BASE_URL ? API_VERSION : 'v1';
+				let url = `${apiBaseUrl}/${apiVersionToUse}/models/${geminiModel}:${TASK}`;
+				if (claudeReq.stream) {
+					url += '?alt=sse';
+				}
+
+				const geminiResponse = await fetch(url, {
+					method: 'POST',
+					headers: makeHeaders(apiKey, { 'Content-Type': 'application/json' }),
+					body: JSON.stringify(geminiReqBody),
+				});
+
+				if (!geminiResponse.ok) {
+					return geminiResponse; // Pass through non-ok responses directly
+				}
+
+				const id = 'claude-proxy-' + this.generateId();
+
+				if (claudeReq.stream) {
+					const { readable, writable } = new TransformStream();
+					geminiResponse
+						.body!.pipeThrough(new TextDecoderStream())
+						.pipeThrough(
+							new TransformStream({
+								transform: this.parseStream, // Reuse Gemini stream parser
+								flush: this.parseStreamFlush,
+								buffer: '',
+								shared: {},
+							} as any)
+						)
+						.pipeThrough(
+							new TransformStream({
+								start: this.transformGeminiToClaudeStreamStart,
+								transform: this.transformGeminiToClaudeStream,
+								flush: this.transformGeminiToClaudeStreamFlush,
+								model: claudeModel,
+								id,
+								shared: {}, // for state
+							} as any)
+						)
+						.pipeThrough(new TextEncoderStream())
+						.pipeTo(writable);
+
+					return new Response(readable, {
+						status: 200,
+						headers: {
+							'Content-Type': 'text/event-stream',
+							'Cache-Control': 'no-cache',
+							Connection: 'keep-alive',
+						},
+					});
+				} else {
+					const geminiResponseBody: GeminiResponse = await geminiResponse.json();
+					return this.transformGeminiToClaudeResponse(geminiResponseBody, claudeModel, id);
+				}
+			}
+			
+			const modelsMatch = pathname.match(/models\/([^/]+)$/);
+			const isModelsList = pathname.endsWith('/models');
+	
+			if (modelsMatch || isModelsList) {
+				if (request.method !== 'GET') throw new HttpError('Method not allowed', 405);
+				const modelId = modelsMatch ? modelsMatch[1] : undefined;
+				const authMode = request.headers.get("X-Auth-Mode") || "claude";
+				return this.handleModels(apiKey, modelId, authMode).catch(errHandler);
+			}
+
+			throw new HttpError('Not Found', 404);
+		} catch (e) {
+			return errHandler(e as Error);
+		}
+	}
+}

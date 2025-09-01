@@ -2,15 +2,17 @@
 
 ## Overview
 
-The Gemini Key Rotator is a powerful, self-hosted Cloudflare Worker designed to provide resilient and scalable access to Google's Gemini API. It acts as a reverse proxy, intelligently rotating through a pool of API keys to mitigate rate-limiting issues and ensure high availability. This project also includes an OpenAI compatibility layer, allowing you to use Gemini with tools and libraries designed for the OpenAI API.
+The Gemini Key Rotator is a powerful, self-hosted Cloudflare Worker designed to provide resilient and scalable access to Google's Gemini API. It acts as a reverse proxy, intelligently rotating through a pool of API keys to mitigate rate-limiting issues and ensure high availability. This project also includes compatibility layers for OpenAI and Claude APIs, allowing you to use Gemini with tools and libraries designed for these platforms.
 
 ## Key Features
 
 - **API Key Rotation:** Automatically rotates through a list of Gemini API keys to distribute requests and avoid rate limits.
-- **OpenAI Compatibility:** A drop-in replacement for the OpenAI API, supporting `/chat/completions`, `/embeddings`, and `/models` endpoints.
+- **LLM Compatibility Layers:**
+    - **OpenAI Compatibility:** A drop-in replacement for the OpenAI API, supporting `/chat/completions`, `/embeddings`, and `/models` endpoints.
+    - **Claude Compatibility:** Supports Claude's `/messages` and `/models` endpoints, including transformation of Gemini's "thinking" content into Claude's format.
 - **Durable Objects:** Utilizes Cloudflare's Durable Objects to maintain the state of API keys and ensure consistent performance.
 - **Secure Admin Panel:** A user-friendly interface for managing your access tokens and API keys, protected by an admin access token.
-- **Multiple Authentication Modes:** Supports OpenAI-style Bearer Tokens, Google-style `x-goog-api-key` headers, and `key` query parameters.
+- **Multiple Authentication Modes:** Supports OpenAI-style Bearer Tokens, Claude-style `x-api-key` headers, Google-style `x-goog-api-key` headers, and `key` query parameters.
 - **CORS Handling:** Includes flexible CORS handling to allow requests from various origins.
 - **Easy Deployment:** Deployable in minutes with Cloudflare's `wrangler` CLI.
 
@@ -106,7 +108,7 @@ npm run deploy
 
 Once deployed, you can access the admin panel at `https://your-worker-url/admin`. You'll be prompted to enter your admin access token. After logging in, you can create a new access token and add your Gemini API keys.
 
-The admin panel will provide you with `curl` examples for making requests to the Gemini API through your worker. You can use your access token as a Bearer Token (for OpenAI compatibility), an `x-goog-api-key` header, or a `key` query parameter.
+The admin panel will provide you with `curl` examples for making requests to the Gemini API through your worker. You can use your access token as a Bearer Token (for OpenAI compatibility), an `x-api-key` header (for Claude compatibility), an `x-goog-api-key` header, or a `key` query parameter.
 
 ### OpenAI-Style Example
 
@@ -116,6 +118,30 @@ curl -X POST \
   -H "Content-Type: application/json" \
   -d '{"model": "gemini-pro", "messages": [{"role": "user", "content": "Explain how a transformer model works"}]}' \
   "https://your-worker-url/chat/completions"
+```
+
+### Claude-Style Example with Thinking
+
+```bash
+curl -X POST "https://your-worker-url/v1/messages" \
+     --header "x-api-key: YOUR_ACCESS_TOKEN" \
+     --header "anthropic-version: 2023-06-01" \
+     --header "content-type: application/json" \
+     --data '{
+       "model": "claude-sonnet-4-20250514",
+       "max_tokens": 16000,
+       "thinking": {
+         "type": "enabled",
+         "budget_tokens": 10000
+       },
+       "messages": [
+         {
+           "role": "user",
+           "content": "Are there an infinite number of prime numbers such that n mod 4 == 3?"
+         }
+       ],
+       "stream": true
+     }'
 ```
 
 ### Google-Style Example
