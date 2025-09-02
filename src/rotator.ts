@@ -242,7 +242,8 @@ const API_VERSION = 'v1beta';
 	  let response = await doProxy(apiKey, clonedRequest.clone() as Request<unknown, CfProperties<unknown>>);
   
 	  let attemptCount = 1;
-	  while ([400, 401, 403, 429, 500, 502, 503, 524].includes(response.status) && attemptCount < apiKeys.length) {
+	  let maxAttempts = apiKeys.length > 3 ? 3 : apiKeys.length; // Cap at 3 keys or total keys if fewer than 3
+	  while ([400, 401, 403, 429, 500, 502, 503, 524].includes(response.status) && attemptCount < maxAttempts) {
 		if (response.status === 401) {
 		  keyStates[keyIndexToUse] = { ...keyStates[keyIndexToUse], invalid: true };
 		} else {
