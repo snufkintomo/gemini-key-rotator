@@ -31,3 +31,4 @@ Thumbs.db
 TESTING_READY.md
 wrangler.toml
 *.md
+flattened-codebase*

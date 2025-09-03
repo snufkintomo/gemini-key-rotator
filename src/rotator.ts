@@ -71,6 +71,44 @@ const API_VERSION = 'v1beta';
 	// Default to a general-purpose Gemini model if no specific mapping is found
 	return 'gemini-2.5-flash';
   }
+
+  // Function to map OpenAI models to Gemini models
+  function getGeminiModelForOpenAI(openAIModel: string): string {
+	// If the model is already a Gemini model, use it directly
+	if (openAIModel.startsWith('gemini-') || openAIModel.startsWith('gemma-') || openAIModel.startsWith('learnlm-')) {
+		return openAIModel;
+	}
+
+	// Map specific OpenAI models to Gemini equivalents
+	switch (openAIModel.toLowerCase()) {
+		case 'gpt-4':
+		case 'gpt-4o':
+		case 'gpt-4o-mini':
+			return 'gemini-2.5-flash';
+		case 'gpt-4-turbo':
+		case 'gpt-4-turbo-preview':
+			return 'gemini-2.5-flash';
+		case 'gpt-3.5-turbo':
+		case 'gpt-3.5-turbo-16k':
+			return 'gemini-2.5-flash';
+		case 'gpt-3.5':
+			return 'gemini-2.5-flash';
+		// Add more mappings as needed for other OpenAI models
+		case 'o1':
+		case 'o1-preview':
+			return 'gemini-2.5-flash'; // Best guess for reasoning model
+		case 'o1-mini':
+			return 'gemini-2.5-flash'; // Best guess for small reasoning model
+		default:
+			// For unknown models, try to extract a valid Gemini model name if embedded
+			if (openAIModel.includes('gemini-')) {
+				const geminiMatch = openAIModel.match(/gemini-[a-z0-9.-]+/);
+				if (geminiMatch) return geminiMatch[0];
+			}
+			// Default fallback for unknown OpenAI models
+			return 'gemini-2.5-flash';
+	}
+  }
   
   const makeHeaders = (apiKey: string, more?: Record<string, string>) => ({
 	'x-goog-api-client': API_CLIENT,
@@ -98,22 +136,7 @@ const API_VERSION = 'v1beta';
 		return new Response("Unauthorized: Access token is required.", { status: 401 });
 	  }
 
-	  if (authMode === "openai" && request.method === 'POST' && requestUrl.pathname.endsWith('/chat/completions')) {
-		try {
-			const body: ChatCompletionCreateParams = await request.clone().json();
-			if (typeof body.model === 'string') {
-				model = body.model.startsWith('models/') ? body.model.substring(7) : body.model;
-			}
-		} catch (e) {
-			console.error("Could not parse request body to get model:", e);
-		}
-	} else if (authMode !== "openai") {
-		// For google native and other modes, model is in the URL
-		const modelMatch = requestUrl.pathname.match(/models\/([^/:]+)/);
-		if (modelMatch) {
-			model = modelMatch[1];
-		}
-	}
+	  model = await this.parseRequestModel(request);
   
 	  // 2. Fetch API Keys, index, and states from D1
 	  const stmt = this.env.DB.prepare("SELECT api_keys, current_key_index, key_states FROM api_credentials WHERE access_token = ?");
@@ -196,54 +219,16 @@ const API_VERSION = 'v1beta';
 		} else if (authMode === "claude") {
 			return this.handleClaude(requestToProxy, apiKey);
 		}
-  
-		let apiBaseUrl: string;
-		let targetUrl: URL;
 
-		if (this.env.GEMINI_API_BASE_URL) {
-			apiBaseUrl = this.env.GEMINI_API_BASE_URL;
-			targetUrl = new URL(requestUrl.pathname + requestUrl.search, apiBaseUrl);
-		} else {
-			// Use Cloudflare AI Gateway for Google AI Studio
-			apiBaseUrl = `${CLOUDFLARE_AI_GATEWAY_BASE}/google-ai-studio`;
-			// The path for AI Gateway is /v1/models/{model}:{generative_ai_rest_resource}
-			// The AI Gateway expects paths like /v1beta/models or /v1beta/models/model_id:task
-			// The original requestUrl.pathname already contains this structure.
-			// So, we just need to append it directly to the AI Gateway base.
-			targetUrl = new URL(`${apiBaseUrl}${requestUrl.pathname}${requestUrl.search}`);
-		}
-
-		const forwardHeaders = new Headers(requestToProxy.headers);
-		["host", "cf-connecting-ip", "cf-ipcountry", "cf-ray", "cf-visitor", "x-forwarded-proto", "x-real-ip", "x-access-token", "x-auth-mode"].forEach(h => forwardHeaders.delete(h));
-  
-		if (authMode === "google") {
-		  forwardHeaders.set("x-goog-api-key", apiKey);
-		}
-		if (targetUrl.searchParams.has("key")) {
-			targetUrl.searchParams.delete("key");
-		 }
-		//targetUrl.searchParams.set("key", apiKey);
-  
-		const methodCanHaveBody = ['POST', 'PUT', 'PATCH'].includes(requestToProxy.method.toUpperCase());
-		const isStreaming = requestUrl.pathname.includes(":stream") || requestUrl.pathname.includes("streamGenerateContent");
-  
-		return this.proxyRequest(
-		  new Request(targetUrl.toString(), {
-			method: requestToProxy.method,
-			headers: forwardHeaders,
-			body: methodCanHaveBody && requestToProxy.body ? requestToProxy.body : null,
-			redirect: 'follow',
-			cf: requestToProxy.cf as CfProperties<unknown> // Preserve the cf property and cast to CfProperties<unknown>
-		  }),
-		  isStreaming
-		);
+		// Default to Gemini (Google) as the backend API for all other auth modes
+		return this.handleGemini(requestToProxy, apiKey);
 	  };
   
-	  let response = await doProxy(apiKey, clonedRequest.clone() as Request<unknown, CfProperties<unknown>>);
+	  let response = await doProxy(apiKey, clonedRequest.clone());
   
 	  let attemptCount = 1;
 	  let maxAttempts = apiKeys.length > 3 ? 3 : apiKeys.length; // Cap at 3 keys or total keys if fewer than 3
-	  while ([400, 401, 403, 429, 500, 502, 503, 524].includes(response.status) && attemptCount < maxAttempts) {
+	  while ([401, 403, 429, 500, 502, 503, 524].includes(response.status) && attemptCount < maxAttempts) {
 		if (response.status === 401) {
 		  keyStates[keyIndexToUse] = { ...keyStates[keyIndexToUse], invalid: true };
 		} else {
@@ -271,7 +256,7 @@ const API_VERSION = 'v1beta';
 		keyIndexToUse = nextKeyIndex;
 		apiKey = apiKeys[keyIndexToUse];
 		attemptCount++;
-		response = await doProxy(apiKey, clonedRequest.clone() as Request<unknown, CfProperties<unknown>>);
+		response = await doProxy(apiKey, clonedRequest.clone());
 	  }
   
 	  if (keyIndexToUse !== null) {
@@ -287,14 +272,39 @@ const API_VERSION = 'v1beta';
   
 	  return response;
 	}
+
+	private async parseRequestModel(request: Request): Promise<string | undefined> {
+		const requestUrl = new URL(request.url);
+		const authMode = request.headers.get("X-Auth-Mode");
+		let model: string | undefined;
+
+		if (authMode === "openai" && request.method === 'POST' && requestUrl.pathname.endsWith('/chat/completions')) {
+			try {
+				const body: ChatCompletionCreateParams = await request.clone().json();
+				if (typeof body.model === 'string') {
+					// Use the OpenAI model mapping for key exhaustion tracking (consistent with actual API calls)
+					model = getGeminiModelForOpenAI(body.model.startsWith('models/') ? body.model.substring(7) : body.model);
+				}
+			} catch (e) {
+				console.error("Could not parse request body to get model:", e);
+			}
+		} else if (authMode !== "openai") {
+			// For google native and other modes, model is in the URL
+			const modelMatch = requestUrl.pathname.match(/models\/([^/:]+)/);
+			if (modelMatch) {
+				model = modelMatch[1];
+			}
+		}
+		return model;
+	}
   
 	private async proxyRequest(request: Request, isStreaming: boolean): Promise<Response> {
-	  const doFetch = () => fetch(request.url, request);
-  
-	  const doFetchWithContentRetry = async (): Promise<Response> => {
+	  const doFetch = (req: Request = request) => fetch(req.url, req);
+
+	  const doFetchWithContentRetry = async (req: Request = request): Promise<Response> => {
 		const maxContentRetries = 3;
 		for (let i = 0; i < maxContentRetries; i++) {
-		  const response = await doFetch();
+		  const response = await doFetch(i === 0 ? req : req.clone());
 		  if (!response.ok) return response;
   
 		  if (isStreaming) {
@@ -386,9 +396,9 @@ const API_VERSION = 'v1beta';
 			? `${apiBaseUrl}/${apiVersionToUse}/models/${modelId}`
 			: `${apiBaseUrl}/${apiVersionToUse}/models`;
 
-		const response = await fetch(url, {
+		const response = await this.proxyRequest(new Request(url, {
 			headers: makeHeaders(apiKey),
-		});
+		}), false);
 
 		if (authMode === "google") {
 			return response;
@@ -464,14 +474,17 @@ const API_VERSION = 'v1beta';
 			throw new HttpError('model is not specified', 400);
 		}
 
-		let modelName = req.model;
-		if (modelName.startsWith('models/')) {
-			modelName = modelName.substring(7);
-		}
+		// Use the OpenAI to Gemini model mapping function, then handle embeddings specifics
+		let modelName = getGeminiModelForOpenAI(req.model);
 
-		// Use default unless it's a known embedding model pattern
+		// Handle embedding model specifics - use default if not a known embedding model
 		if (!modelName.startsWith('text-embedding-') && !modelName.startsWith('embedding-') && !modelName.startsWith('gemini-')) {
 			modelName = DEFAULT_EMBEDDINGS_MODEL;
+		}
+
+		// Remove models/ prefix if present (for compatibility)
+		if (modelName.startsWith('models/')) {
+			modelName = modelName.substring(7);
 		}
 
 		const model = `models/${modelName}`;
@@ -484,7 +497,7 @@ const API_VERSION = 'v1beta';
 		const apiBaseUrl = this.env.GEMINI_API_BASE_URL || `${CLOUDFLARE_AI_GATEWAY_BASE}/google-ai-studio`;
 		const apiVersionToUse = this.env.GEMINI_API_BASE_URL ? API_VERSION : 'v1'; // Use 'v1' for AI Gateway
 		
-		const response = await fetch(`${apiBaseUrl}/${apiVersionToUse}/${model}:batchEmbedContents`, {
+		const response = await this.proxyRequest(new Request(`${apiBaseUrl}/${apiVersionToUse}/${model}:batchEmbedContents`, {
 			method: 'POST',
 			headers: makeHeaders(apiKey, { 'Content-Type': 'application/json' }),
 			body: JSON.stringify({
@@ -494,7 +507,7 @@ const API_VERSION = 'v1beta';
 					outputDimensionality: req.dimensions,
 				})),
 			}),
-		});
+		}), false);
 
 		let responseBody: BodyInit | null = response.body;
 		if (response.ok) {
@@ -524,16 +537,9 @@ const API_VERSION = 'v1beta';
 			req.messages = [{ role: 'user', content: (req as any).input }];
 		}
 
-		switch (true) {
-			case typeof req.model !== 'string':
-				break;
-			case req.model.startsWith('models/'):
-				model = req.model.substring(7);
-				break;
-			case req.model.startsWith('gemini-'):
-			case req.model.startsWith('gemma-'):
-			case req.model.startsWith('learnlm-'):
-				model = req.model;
+		// Use the OpenAI to Gemini model mapping function
+		if (typeof req.model === 'string') {
+			model = getGeminiModelForOpenAI(req.model);
 		}
 
 		let body = await this.transformRequest(req);
@@ -563,16 +569,18 @@ const API_VERSION = 'v1beta';
 		const TASK = req.stream ? 'streamGenerateContent' : 'generateContent';
 		const apiBaseUrl = this.env.GEMINI_API_BASE_URL || `${CLOUDFLARE_AI_GATEWAY_BASE}/google-ai-studio`;
 		const apiVersionToUse = this.env.GEMINI_API_BASE_URL ? API_VERSION : 'v1'; // Use 'v1' for AI Gateway
-		let url = `${apiBaseUrl}/${apiVersionToUse}/models/${model}:${TASK}`;
+		//let url = `${apiBaseUrl}/${apiVersionToUse}/models/${model}:${TASK}`;
+		let url = new URL(`${apiBaseUrl}/${apiVersionToUse}/models/${model}:${TASK}`);
 		if (req.stream) {
-			url += '?alt=sse';
+			//url += '?alt=sse';
+			url.searchParams.set("alt", "sse");
 		}
 
-		const response = await fetch(url, {
+		const response = await this.proxyRequest(new Request(url, {
 			method: 'POST',
 			headers: makeHeaders(apiKey, { 'Content-Type': 'application/json' }),
 			body: JSON.stringify(body),
-		});
+		}), !!req.stream);
 
 		let responseBody: BodyInit | null = response.body;
 		if (response.ok) {
@@ -714,22 +722,26 @@ const API_VERSION = 'v1beta';
 		let system_instruction;
 
 		for (const item of messages) {
+			let roleToUse: string; // Declare roleToUse here
 			switch (item.role) {
 				case 'system':
 					system_instruction = { parts: await this.transformMsg(item) };
 					continue;
 				case 'assistant':
-					(item as any).role = 'model';
+					roleToUse = 'model'; // Map assistant to model
 					break;
 				case 'user':
-				case 'developer': // Treat 'developer' role as 'user' for content transformation
+					roleToUse = 'user'; // Explicitly keep user as user
+					break;
+				case 'developer':
+					roleToUse = 'user'; // Map developer to user
 					break;
 				default:
 					throw new HttpError(`Unknown message role: "${item.role}"`, 400);
 			}
 
 			contents.push({
-				role: item.role,
+				role: roleToUse,
 				parts: await this.transformMsg(item),
 			});
 		}
@@ -1371,16 +1383,18 @@ const API_VERSION = 'v1beta';
 				const TASK = claudeReq.stream ? 'streamGenerateContent' : 'generateContent';
 				const apiBaseUrl = this.env.GEMINI_API_BASE_URL || `${CLOUDFLARE_AI_GATEWAY_BASE}/google-ai-studio`;
 				const apiVersionToUse = this.env.GEMINI_API_BASE_URL ? API_VERSION : 'v1';
-				let url = `${apiBaseUrl}/${apiVersionToUse}/models/${geminiModel}:${TASK}`;
+				//let url = `${apiBaseUrl}/${apiVersionToUse}/models/${geminiModel}:${TASK}`;
+				let url = new URL(`${apiBaseUrl}/${apiVersionToUse}/models/${geminiModel}:${TASK}`);
 				if (claudeReq.stream) {
-					url += '?alt=sse';
+					//url += '?alt=sse';
+					url.searchParams.set("alt", "sse");
 				}
 
-				const geminiResponse = await fetch(url, {
+				const geminiResponse = await this.proxyRequest(new Request(url, {
 					method: 'POST',
 					headers: makeHeaders(apiKey, { 'Content-Type': 'application/json' }),
 					body: JSON.stringify(geminiReqBody),
-				});
+				}), !!claudeReq.stream);
 
 				if (!geminiResponse.ok) {
 					return geminiResponse; // Pass through non-ok responses directly
@@ -1426,10 +1440,10 @@ const API_VERSION = 'v1beta';
 					return this.transformGeminiToClaudeResponse(geminiResponseBody, claudeModel, id);
 				}
 			}
-			
+
 			const modelsMatch = pathname.match(/models\/([^/]+)$/);
 			const isModelsList = pathname.endsWith('/models');
-	
+
 			if (modelsMatch || isModelsList) {
 				if (request.method !== 'GET') throw new HttpError('Method not allowed', 405);
 				const modelId = modelsMatch ? modelsMatch[1] : undefined;
@@ -1441,5 +1455,50 @@ const API_VERSION = 'v1beta';
 		} catch (e) {
 			return errHandler(e as Error);
 		}
+	}
+
+	// --- Gemini Native Compatibility Layer ---
+
+	private async handleGemini(request: Request, apiKey: string): Promise<Response> {
+		const requestUrl = new URL(request.url);
+		let apiBaseUrl: string;
+		let targetUrl: URL;
+
+		if (this.env.GEMINI_API_BASE_URL) {
+			apiBaseUrl = this.env.GEMINI_API_BASE_URL;
+			targetUrl = new URL(requestUrl.pathname + requestUrl.search, apiBaseUrl);
+		} else {
+			// Use Cloudflare AI Gateway for Google AI Studio
+			apiBaseUrl = `${CLOUDFLARE_AI_GATEWAY_BASE}/google-ai-studio`;
+			// The path for AI Gateway is /v1/models/{model}:{generative_ai_rest_resource}
+			// The AI Gateway expects paths like /v1beta/models or /v1beta/models/model_id:task
+			// The original requestUrl.pathname already contains this structure.
+			// So, we just need to append it directly to the AI Gateway base.
+			targetUrl = new URL(`${apiBaseUrl}${requestUrl.pathname}${requestUrl.search}`);
+		}
+
+		let forwardHeaders = new Headers(makeHeaders(apiKey));
+		if (targetUrl.searchParams.has("key")) {
+			targetUrl.searchParams.delete("key");
+		}
+
+		const methodCanHaveBody = ['POST', 'PUT', 'PATCH'].includes(request.method.toUpperCase());
+		const isStreaming = requestUrl.pathname.includes(":stream") || requestUrl.pathname.includes("streamGenerateContent");
+
+		// For streaming requests in Gemini mode, append ?alt=sse to enable streaming response
+		if (isStreaming && !targetUrl.searchParams.has("alt")) {
+			targetUrl.searchParams.set("alt", "sse");
+		}
+
+		return this.proxyRequest(
+			new Request(targetUrl.toString(), {
+				method: request.method,
+				headers: forwardHeaders,
+				body: methodCanHaveBody && request.body ? request.body : null,
+				redirect: 'follow',
+				cf: request.cf as CfProperties<unknown>
+			}),
+			isStreaming
+		);
 	}
 }
