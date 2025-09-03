@@ -32,3 +32,14 @@ TESTING_READY.md
 wrangler.toml
 *.md
 flattened-codebase*
+docs/
+.bmad*
+.clinerules/
+checklists/
+agents/
+agent-teams/
+tasks/
+data/
+utils/
+web-bundles/
+temp_db_migration.sql
