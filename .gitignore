@@ -41,7 +41,6 @@ agents/
 agent-teams/
 tasks/
 data/
-utils/
 web-bundles/
 referencecode/
 temp_db_migration.sql

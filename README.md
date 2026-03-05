@@ -2,152 +2,149 @@
 
 ## Overview
 
-The Gemini Key Rotator is a powerful, self-hosted Cloudflare Worker designed to provide resilient and scalable access to Google's Gemini API. It acts as a reverse proxy, intelligently rotating through a pool of API keys to mitigate rate-limiting issues and ensure high availability. This project also includes compatibility layers for OpenAI and Claude APIs, allowing you to use Gemini with tools and libraries designed for these platforms.
+The Gemini Key Rotator is a powerful, self-hosted Cloudflare Worker designed to provide resilient and scalable access to Google's Gemini API. It acts as a reverse proxy, intelligently rotating through a pool of Gemini API keys and Google OAuth 2.0 credentials to mitigate rate-limiting issues and ensure high availability.
+
+The project features a modular architecture with native compatibility layers for **OpenAI**, **Claude (Anthropic)**, and **Google Gemini** APIs.
 
 ## Key Features
 
-- **API Key Rotation:** Automatically rotates through a list of Gemini API keys to distribute requests and avoid rate limits.
-- **LLM Compatibility Layers:**
-    - **OpenAI Compatibility:** A drop-in replacement for the OpenAI API, supporting `/chat/completions`, `/embeddings`, and `/models` endpoints.
-    - **Claude Compatibility:** Supports Claude's `/messages` and `/models` endpoints, including transformation of Gemini's "thinking" content into Claude's format.
-- **Durable Objects:** Utilizes Cloudflare's Durable Objects to maintain the state of API keys and ensure consistent performance.
-- **Secure Admin Panel:** A user-friendly interface for managing your access tokens and API keys, protected by an admin access token.
-- **Multiple Authentication Modes:** Supports OpenAI-style Bearer Tokens, Claude-style `x-api-key` headers, Google-style `x-goog-api-key` headers, and `key` query parameters.
-- **CORS Handling:** Includes flexible CORS handling to allow requests from various origins.
-- **Easy Deployment:** Deployable in minutes with Cloudflare's `wrangler` CLI.
+- **Multi-Protocol Support:**
+    - **OpenAI Compatibility:** Drop-in replacement for OpenAI API (`/v1/chat/completions`, `/v1/embeddings`, `/v1/models`).
+    - **Claude Compatibility:** Supports Claude's `/v1/messages` and `/v1/models` endpoints, including "thinking" mode.
+    - **Gemini Native Support:** Full support for Google Gemini API formats.
+- **Advanced Key Rotation:**
+    - Rotates through standard Gemini API keys.
+    - Supports Google OAuth 2.0 credentials for high-tier API access.
+    - Automatic failover and exhaustion tracking (cooldowns) managed via **Cloudflare Durable Objects**.
+- **Secure Admin Panel:** Web-based dashboard for managing access tokens, API keys, and monitoring system health.
+- **Detailed Logging:** Usage tracking, performance metrics, and request/response logging stored in **Cloudflare D1**.
+- **AI Gateway Integration:** Seamless integration with Cloudflare AI Gateway for enhanced observability and caching.
+- **OAuth 2.0 Management:** Built-in flow for authorizing and exchanging Google Cloud credentials with PKCE support.
 
-## How It Works
+## Architecture
 
-The Gemini Key Rotator is built around a Cloudflare Worker that intercepts requests to the Gemini API. It uses a Durable Object, `KeyRotator`, to manage a pool of API keys for each access token. When a request comes in, the worker forwards it to the `KeyRotator`, which selects an available API key and proxies the request to the Gemini API. If a key is exhausted or invalid, the rotator automatically tries the next available key.
+Built on the latest Cloudflare Workers features:
+- **Durable Objects:** Maintains global state for key rotation and rate limits.
+- **D1 Database:** Relational storage for credentials and audit logs.
+- **Streaming:** High-performance pass-through streaming for all AI protocols.
 
-The project also includes a secure admin panel for managing your credentials. You can create, update, and delete access tokens and their associated API keys. The admin panel is protected by a secret admin access token that you configure in your Cloudflare Worker's environment variables.
+---
 
 ## Setup and Deployment
 
-### Prerequisites
+### 1. Prerequisites
+- A Cloudflare account (Paid plan required for Durable Objects).
+- Node.js and `npm` installed.
+- `wrangler` CLI: `npm install -g wrangler`
 
-- A Cloudflare account
-- Node.js and npm installed
-- `wrangler` CLI installed (`npm install -g wrangler`)
+### 2. Create Cloudflare Resources
 
-### 1. Clone the Repository
-
+#### a. Create D1 Database
 ```bash
-git clone https://github.com/snufkintomo/gemini-key-rotator.git
-cd gemini-key-rotator
+wrangler d1 create gemini-key-rotator
+```
+Note the `database_id` from the output.
+
+#### b. Initialize Database Schema
+Apply the initial schema to your D1 database:
+```bash
+wrangler d1 execute gemini-key-rotator --command "
+CREATE TABLE api_credentials (
+    access_token TEXT PRIMARY KEY,
+    api_keys TEXT,
+    current_key_index INTEGER DEFAULT 0,
+    key_states TEXT DEFAULT '[]',
+    oauth_credentials TEXT DEFAULT '',
+    current_oauth_index INTEGER DEFAULT 0,
+    oauth_key_states TEXT DEFAULT '[]'
+);
+CREATE TABLE api_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
+    access_token TEXT,
+    request_method TEXT,
+    request_url TEXT,
+    request_headers TEXT,
+    request_body TEXT,
+    response_status INTEGER,
+    response_headers TEXT,
+    response_body TEXT,
+    duration_ms INTEGER
+);"
 ```
 
-### 2. Install Dependencies
+#### c. Create AI Gateway (Optional)
+In your Cloudflare Dashboard, go to **AI > AI Gateway** and create a gateway named `gemini`.
 
+### 3. Configuration
+
+1. Copy the example configuration:
+   ```bash
+   cp wrangler.toml.example wrangler.toml
+   ```
+2. Update `wrangler.toml` with your `database_id`.
+3. Set your environment variables (Secrets):
+   ```bash
+   wrangler secret put ADMIN_ACCESS_TOKEN    # Your dashboard password
+   wrangler secret put OAUTH_CLIENT_ID       # From Google Cloud Console
+   wrangler secret put OAUTH_CLIENT_SECRET   # From Google Cloud Console
+   ```
+
+### 4. Deploy
 ```bash
 npm install
-```
-
-### 3. Create Cloudflare Resources
-
-Before deploying the worker, you'll need to create a D1 database and an AI Gateway.
-
-#### a. Create a D1 Database
-
-You can create a D1 database using the `wrangler` CLI:
-
-```bash
-wrangler d1 create gemini-key-rotator-db
-```
-
-This command will create a new D1 database and output the `database_id` in your `wrangler.toml` file.
-
-#### b. Create an AI Gateway
-
-Navigate to the **AI Gateway** section in your Cloudflare dashboard and create a new gateway. You can name it whatever you like. Once created, you'll need to note the **Gateway ID** and **Gateway Name** for the next step.
-
-### 4. Configure `wrangler.toml`
-
-Copy `wrangler.toml.example` to `wrangler.toml` and fill in your Cloudflare account details.
-
-```bash
-cp wrangler.toml.example wrangler.toml
-```
-
-Then, update `wrangler.toml` with your specific configuration (D1 database name/ID, etc.). Note that `wrangler.toml` is ignored by git to protect your secrets.
-
-### 5. Set Environment Variables
-
-You'll need to set a secret admin access token to protect your admin panel. You can do this in the Cloudflare dashboard or via the `wrangler` CLI.
-
-```bash
-wrangler secret put ADMIN_ACCESS_TOKEN
-```
-
-If you're using the Cloudflare AI Gateway, you'll also need to set the following secrets:
-
-```bash
-wrangler secret put CLOUDFLARE_AI_GATEWAY_ID
-wrangler secret put CLOUDFLARE_AI_GATEWAY_NAME
-```
-
-You can also set an optional `GEMINI_API_BASE_URL` if you need to use a custom Gemini API endpoint.
-
-### 6. Deploy the Worker
-
-```bash
 npm run deploy
 ```
 
-## Usage
+---
 
-Once deployed, you can access the admin panel at `https://your-worker-url/admin`. You'll be prompted to enter your admin access token. After logging in, you can create a new access token and add your Gemini API keys.
+## Usage Guide
 
-The admin panel will provide you with `curl` examples for making requests to the Gemini API through your worker. You can use your access token as a Bearer Token (for OpenAI compatibility), an `x-api-key` header (for Claude compatibility), an `x-goog-api-key` header, or a `key` query parameter.
+### Admin Dashboard
+Access the dashboard at `https://your-worker.workers.dev/admin`.
+1. Log in with your `ADMIN_ACCESS_TOKEN`.
+2. Create an **Access Token** (this is what you'll use in your AI apps).
+3. Add **Gemini API Keys** (comma-separated) or use the **OAuth flow** to add Google Cloud credentials.
 
-### OpenAI-Style Example
+### API Examples
 
+#### OpenAI Compatibility
 ```bash
-curl -X POST \
+curl https://your-worker.workers.dev/v1/chat/completions \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"model": "gemini-pro", "messages": [{"role": "user", "content": "Explain how a transformer model works"}]}' \
-  "https://your-worker-url/chat/completions"
+  -d '{
+    "model": "gemini-2.0-flash",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
 ```
 
-### Claude-Style Example with Thinking
-
+#### Claude Compatibility (with Thinking)
 ```bash
-curl -X POST "https://your-worker-url/v1/messages" \
-     --header "x-api-key: YOUR_ACCESS_TOKEN" \
-     --header "anthropic-version: 2023-06-01" \
-     --header "content-type: application/json" \
-     --data '{
-       "model": "claude-sonnet-4-20250514",
-       "max_tokens": 16000,
-       "thinking": {
-         "type": "enabled",
-         "budget_tokens": 10000
-       },
-       "messages": [
-         {
-           "role": "user",
-           "content": "Are there an infinite number of prime numbers such that n mod 4 == 3?"
-         }
-       ],
-       "stream": true
-     }'
+curl https://your-worker.workers.dev/v1/messages \
+  -H "x-api-key: YOUR_ACCESS_TOKEN" \
+  -H "anthropic-version: 2023-06-01" \
+  -d '{
+    "model": "claude-3-7-sonnet",
+    "max_tokens": 1024,
+    "thinking": {"type": "enabled", "budget_tokens": 1024},
+    "messages": [{"role": "user", "content": "Think deeply about quantum physics."}]
+  }'
 ```
 
-### Google-Style Example
-
+#### Google Gemini Native
 ```bash
 curl -X POST \
   -H "x-goog-api-key: YOUR_ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"contents":[{"parts":[{"text":"Explain how a transformer model works"}]}]}' \
-  "https://your-worker-url/v1beta/models/gemini-pro:generateContent"
+  "https://your-worker.workers.dev/v1beta/models/gemini-2.0-flash:generateContent"
 ```
 
-## Contributing
+---
 
-Contributions are welcome! Please feel free to submit a pull request or open an issue if you have any suggestions or find any bugs.
+## Contributing
+Contributions are welcome! Please submit a pull request or open an issue.
 
 ## License
-
-This project is licensed under the MIT License.
+MIT License

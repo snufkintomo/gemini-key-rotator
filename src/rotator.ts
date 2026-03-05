@@ -17,6 +17,8 @@ import { getStandardRotationIndex, parseCredentials } from './utils/credentials'
 export interface Env {
 	DB: D1Database;
 	GEMINI_API_BASE_URL?: string;
+	OAUTH_CLIENT_ID?: string;
+	OAUTH_CLIENT_SECRET?: string;
 	CLOUDFLARE_AI_GATEWAY_ID: string;
 	CLOUDFLARE_AI_GATEWAY_NAME: string;
 	ENABLE_API_LOGGING?: string;
@@ -153,12 +155,14 @@ export class KeyRotator {
 							stream,
 							this.ctx.env.DB,
 							this.ctx.waitUntil.bind(this.ctx),
-							this.ctx.isLoggingEnabled,
-							token
-						),
-					this.ctx.state,
-					mod
-				);
+					this.ctx.isLoggingEnabled,
+					token
+				),
+			this.ctx.state,
+			mod,
+			this.ctx.env.OAUTH_CLIENT_ID,
+			this.ctx.env.OAUTH_CLIENT_SECRET
+		);
 
 			if (authMode === 'openai') {
 				return handleOpenAI(
