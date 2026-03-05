@@ -137,31 +137,339 @@
             from { opacity: 0; transform: translateY(10px); }
             to { opacity: 1; transform: translateY(0); }
         }
+
+        /* Tab Styles */
+        .tab-buttons {
+            display: flex;
+            margin-bottom: 2rem;
+            border-bottom: 2px solid var(--border-color);
+        }
+        .tab-button {
+            padding: 12px 24px;
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: 500;
+            color: var(--text-secondary);
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s;
+        }
+        .tab-button.active {
+            color: var(--accent-color);
+            border-bottom-color: var(--accent-color);
+        }
+        .tab-content {
+            display: none;
+        }
+        .tab-content.active {
+            display: block;
+        }
+    </style>
     </style>
 </head>
 <body>
     <div class="container">
         <h1>Gemini Key Rotator</h1>
-        <h2>Create or Update Your Credentials</h2>
-    <p>Provide your desired Access Token and the corresponding Gemini API keys. If the token already exists, its keys will be updated.</p>
-    
-    <form id="keyForm">
-        <label for="accessToken">Access Token:</label><br>
-        <input type="text" id="accessToken" name="accessToken" required style="width: 100%; padding: 8px; border-radius: 6px; border: 1px solid #ccc; font-size: 1rem;">
-        <br><br>
-        <label for="apiKeys">API Keys:</label><br>
-        <textarea id="apiKeys" name="apiKeys" required placeholder="AIzaSy...&#10;AIzaSy...&#10;AIzaSy..."></textarea>
-        <br><br>
-        <div class="button-group">
-            <button type="submit">Save Credentials</button>
-            <button type="button" id="deleteButton">Delete</button>
-        </div>
-    </form>
 
-    <div id="result"></div>
+        <div class="tab-buttons">
+            <button class="tab-button" data-tab="credentials-tab">API Keys</button>
+            <button class="tab-button" data-tab="oauth-tab">OAuth Credentials</button>
+            <button class="tab-button" data-tab="logs-tab">API Logs</button>
+        </div>
+
+        <!-- API Keys Tab -->
+        <div id="credentials-tab" class="tab-content">
+            <h2>Create or Update API Key Credentials</h2>
+            <p>Provide your desired Access Token and the corresponding Gemini API keys. If the token already exists, its keys will be updated.</p>
+
+            <form id="keyForm">
+                <label for="accessToken">Access Token:</label><br>
+                <input type="text" id="accessToken" name="accessToken" required style="width: 100%; padding: 8px; border-radius: 6px; border: 1px solid #ccc; font-size: 1rem;">
+                <br><br>
+                <label for="apiKeys">API Keys:</label><br>
+                <textarea id="apiKeys" name="apiKeys" required placeholder="AIzaSy...&#10;AIzaSy...&#10;AIzaSy..."></textarea>
+                <br><br>
+                <div class="button-group">
+                    <button type="submit">Save Credentials</button>
+                    <button type="button" id="deleteButton">Delete</button>
+                </div>
+            </form>
+
+            <div id="result"></div>
+        </div>
+
+        <!-- OAuth Credentials Tab -->
+        <div id="oauth-tab" class="tab-content">
+            <h2>Manage OAuth Credentials</h2>
+            <p>Set up OAuth credentials for Gemini CLI and Antigravity. You can either manually paste a credential string or use the "Connect Google Account" flow.</p>
+
+            <form id="oauthForm">
+                <label for="oauthAccessToken">Access Token:</label>
+                <input type="text" id="oauthAccessToken" name="oauthAccessToken" required placeholder="Your custom access token">
+                <br><br>
+                
+                <div style="background: #f8f9fa; padding: 1.5rem; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 1.5rem;">
+                    <h3 style="margin-top: 0;">Connect Google Account</h3>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                        <div>
+                            <label for="clientId">Client ID:</label>
+                            <input type="text" id="clientId" placeholder="Google OAuth Client ID">
+                        </div>
+                        <div>
+                            <label for="clientSecret">Client Secret:</label>
+                            <input type="text" id="clientSecret" placeholder="Google OAuth Client Secret">
+                        </div>
+                    </div>
+                    <button type="button" id="connectGoogleBtn" style="background-color: #4285F4;">Connect Google Account</button>
+                    <p style="font-size: 0.85rem; color: #718096; margin-top: 0.5rem;">This will open a popup. If the redirect fails (localhost:8085), <strong>copy the full URL</strong> from the address bar and paste it below.</p>
+                    
+                    <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #e2e8f0;">
+                        <label for="manualCode">Manual Callback URL or Code:</label>
+                        <div style="display: flex; gap: 0.5rem;">
+                            <input type="text" id="manualCode" placeholder="Paste localhost URL or code here">
+                            <button type="button" id="manualExchangeBtn" style="width: auto; white-space: nowrap;">Exchange</button>
+                        </div>
+                    </div>
+                </div>
+
+                <label for="oauthCredentials">OAuth Credentials (One per line):</label>
+                <textarea id="oauthCredentials" name="oauthCredentials" required placeholder="client_id:client_secret:refresh_token:project_id"></textarea>
+                <br><br>
+                <div class="button-group">
+                    <button type="submit">Save All OAuth Credentials</button>
+                    <button type="button" id="oauthDeleteButton">Clear All OAuth</button>
+                </div>
+            </form>
+
+            <div id="oauthResult"></div>
+        </div>
+
+        <!-- Logs Tab -->
+        <div id="logs-tab" class="tab-content">
+            <h2>API Logs</h2>
+            <p>Monitor all API requests and responses. Click "Load Logs" to fetch recent entries.</p>
+
+            <button id="loadLogsBtn">Load Logs</button>
+            <button id="refreshLogsBtn" style="display: none;">Refresh</button>
+            <select id="logsLimit">
+                <option value="10">10</option>
+                <option value="50" selected>50</option>
+                <option value="100">100</option>
+            </select>
+            <label for="logsLimit">entries per page</label>
+            <button id="clearAllLogsBtn" style="display: none; background-color: var(--danger-color); color: white; margin-left: 1rem;">Clear All Logs</button>
+
+            <div id="logsTableContainer" style="margin-top: 2rem; display: none;">
+                <table id="logsTable" border="1" style="width: 100%; border-collapse: collapse;">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Timestamp</th>
+                            <th>Method</th>
+                            <th>URL</th>
+                            <th>Status</th>
+                            <th>Duration (ms)</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="logsTableBody">
+                    </tbody>
+                </table>
+                <div style="margin-top: 1rem;">
+                    <button id="prevPageBtn" disabled>Previous</button>
+                    <span id="pageInfo"></span>
+                    <button id="nextPageBtn" disabled>Next</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Modal for viewing log details -->
+        <div id="logDetailsModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); justify-content: center; align-items: center; z-index: 1000;">
+            <div style="background: white; padding: 2rem; border-radius: 8px; max-width: 80%; max-height: 80%; overflow: auto;">
+                <h3>Log Details</h3>
+                <pre id="logDetailsContent"></pre>
+                <button id="closeModalBtn">Close</button>
+            </div>
+        </div>
     </div>
 
     <script>
+        // ... existing JavaScript ...
+
+        // New JavaScript for Logs
+        const loadLogsBtn = document.getElementById('loadLogsBtn');
+        const refreshLogsBtn = document.getElementById('refreshLogsBtn');
+        const clearAllLogsBtn = document.getElementById('clearAllLogsBtn');
+        const logsLimit = document.getElementById('logsLimit');
+        const logsTableContainer = document.getElementById('logsTableContainer');
+        const logsTableBody = document.getElementById('logsTableBody');
+        const prevPageBtn = document.getElementById('prevPageBtn');
+        const nextPageBtn = document.getElementById('nextPageBtn');
+        const pageInfo = document.getElementById('pageInfo');
+        const logDetailsModal = document.getElementById('logDetailsModal');
+        const logDetailsContent = document.getElementById('logDetailsContent');
+        const closeModalBtn = document.getElementById('closeModalBtn');
+
+        let currentPage = 1;
+        let totalPages = 0;
+
+        loadLogsBtn.addEventListener('click', () => {
+            loadLogs(1);
+        });
+
+        refreshLogsBtn.addEventListener('click', () => {
+            loadLogs(currentPage);
+        });
+
+        clearAllLogsBtn.addEventListener('click', () => {
+            clearAllLogs();
+        });
+
+        prevPageBtn.addEventListener('click', () => {
+            if (currentPage > 1) {
+                loadLogs(currentPage - 1);
+            }
+        });
+
+        nextPageBtn.addEventListener('click', () => {
+            if (currentPage < totalPages) {
+                loadLogs(currentPage + 1);
+            }
+        });
+
+        async function loadLogs(page) {
+            const limit = logsLimit.value;
+            try {
+                const response = await fetch(`/api/logs?page=${page}&limit=${limit}`);
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`HTTP ${response.status}: ${errorText}`);
+                }
+                const data = await response.json();
+                renderLogs(data.logs, data.page, data.total, parseInt(limit));
+                loadLogsBtn.style.display = 'none';
+                refreshLogsBtn.style.display = 'inline-block';
+                clearAllLogsBtn.style.display = 'inline-block';
+                logsTableContainer.style.display = 'block';
+            } catch (error) {
+                alert('Error loading logs: ' + error.message);
+            }
+        }
+
+        function renderLogs(logs, page, total, limit) {
+            logsTableBody.innerHTML = '';
+            logs.forEach(log => {
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>${log.id}</td>
+                    <td>${new Date(log.timestamp).toLocaleString()}</td>
+                    <td>${log.request_method}</td>
+                    <td>${log.request_url.substring(0, 50)}...</td>
+                    <td>${log.response_status || 'Pending'}</td>
+                    <td>${log.duration_ms || '-'}</td>
+                    <td>
+                        <button data-log-id="${log.id}" class="viewLogBtn">View</button>
+                        <button data-log-id="${log.id}" class="deleteLogBtn" style="background-color: var(--danger-color); color: white; margin-left: 0.5rem;">Delete</button>
+                    </td>
+                `;
+                logsTableBody.appendChild(row);
+            });
+
+            currentPage = page;
+            totalPages = Math.ceil(total / limit);
+            pageInfo.textContent = `Page ${page} of ${totalPages} (${total} total)`;
+            prevPageBtn.disabled = page <= 1;
+            nextPageBtn.disabled = page >= totalPages;
+
+            // Add event listeners to buttons
+            document.querySelectorAll('.viewLogBtn').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    const logId = e.target.getAttribute('data-log-id');
+                    viewLogDetails(logId, logs);
+                });
+            });
+
+            document.querySelectorAll('.deleteLogBtn').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    const logId = e.target.getAttribute('data-log-id');
+                    deleteLog(logId);
+                });
+            });
+        }
+
+        function viewLogDetails(logId, logs) {
+            const log = logs.find(l => l.id == logId);
+            if (log) {
+                logDetailsContent.textContent = JSON.stringify(log, null, 2);
+                logDetailsModal.style.display = 'flex';
+            }
+        }
+
+        closeModalBtn.addEventListener('click', () => {
+            logDetailsModal.style.display = 'none';
+        });
+
+        async function deleteLog(logId) {
+            if (!confirm(`Are you sure you want to delete log ID ${logId}?`)) return;
+            try {
+                const response = await fetch(`/api/logs/${logId}`, {
+                    method: 'DELETE'
+                });
+                if (response.ok) {
+                    alert('Log deleted successfully');
+                    loadLogs(currentPage); // Refresh
+                } else {
+                    const data = await response.json();
+                    alert('Error deleting log: ' + (data.message || data.error));
+                }
+            } catch (error) {
+                alert('Error deleting log: ' + error.message);
+            }
+        }
+
+        async function clearAllLogs() {
+            if (!confirm(`Are you sure you want to delete ALL logs? This action cannot be undone.`)) return;
+            try {
+                const response = await fetch('/api/logs', {
+                    method: 'DELETE'
+                });
+                if (response.ok) {
+                    const data = await response.json();
+                    alert(data.message + ' (' + data.deletedCount + ' logs cleared)');
+                    loadLogs(1); // Reload from page 1 after clearing
+                } else {
+                    const data = await response.json();
+                    alert('Error clearing logs: ' + (data.message || data.error));
+                }
+            } catch (error) {
+                alert('Error clearing logs: ' + error.message);
+            }
+        }
+        // Tab Switching
+        const tabButtons = document.querySelectorAll('.tab-button');
+        const tabContents = document.querySelectorAll('.tab-content');
+
+        tabButtons.forEach(button => {
+            button.addEventListener('click', () => {
+                const targetTab = button.getAttribute('data-tab');
+
+                // Hide all tab contents
+                tabContents.forEach(content => content.classList.remove('active'));
+
+                // Remove active class from all buttons
+                tabButtons.forEach(btn => btn.classList.remove('active'));
+
+                // Show the selected tab and activate button
+                document.getElementById(targetTab).classList.add('active');
+                button.classList.add('active');
+            });
+        });
+
+        // Set initial tab
+        document.getElementById('credentials-tab').classList.add('active');
+        document.querySelector('.tab-button[data-tab="credentials-tab"]').classList.add('active');
+
         const form = document.getElementById('keyForm');
         const resultDiv = document.getElementById('result');
         const accessTokenInput = document.getElementById('accessToken');
@@ -346,6 +654,274 @@
             }
 
             resultDiv.style.display = 'block';
+        });
+
+        // OAuth Form Handling
+        const oauthForm = document.getElementById('oauthForm');
+        const oauthResultDiv = document.getElementById('oauthResult');
+        const oauthAccessTokenInput = document.getElementById('oauthAccessToken');
+        const oauthCredentialsTextarea = document.getElementById('oauthCredentials');
+        const clientIdInput = document.getElementById('clientId');
+        const clientSecretInput = document.getElementById('clientSecret');
+        const connectGoogleBtn = document.getElementById('connectGoogleBtn');
+        const manualCodeInput = document.getElementById('manualCode');
+        const manualExchangeBtn = document.getElementById('manualExchangeBtn');
+
+        const REDIRECT_URI = `http://localhost:8085/oauth2callback`;
+
+        // Auto-fetch OAuth credentials when token is entered
+        oauthAccessTokenInput.addEventListener('input', () => {
+            clearTimeout(fetchTimeout);
+            fetchTimeout = setTimeout(async () => {
+                const token = oauthAccessTokenInput.value.trim();
+                if (token.length >= 10) {
+                    try {
+                        const response = await fetch('/api/oauth-credentials', {
+                            headers: { 'X-Access-Token': token }
+                        });
+                        if (response.ok) {
+                            const data = await response.json();
+                            if (data.hasOwnProperty('oauth_credentials')) {
+                                oauthCredentialsTextarea.value = data.oauth_credentials ? data.oauth_credentials.replace(/,/g, '\n') : '';
+                            }
+                        }
+                    } catch (error) { console.error('Error fetching OAuth:', error); }
+                }
+            }, 500);
+        });
+
+        connectGoogleBtn.addEventListener('click', async () => {
+            const clientId = clientIdInput.value.trim();
+            const clientSecret = clientSecretInput.value.trim();
+
+            try {
+                // Ensure we get a fresh authorize URL with a new PKCE verifier (stored in cookie)
+                let authUrl = `/api/oauth-authorize?redirect_uri=${encodeURIComponent(REDIRECT_URI)}`;
+                if (clientId) {
+                    authUrl += `&client_id=${clientId}`;
+                }
+                const response = await fetch(authUrl);
+                const data = await response.json();
+                
+                const popup = window.open(data.url, 'google_oauth', 'width=600,height=700');
+                
+                // Wait for message from popup
+                window.onmessage = async (event) => {
+                    if (event.data.type === 'oauth-code') {
+                        const code = event.data.code;
+                        // Exchange code for credential string. The worker will use the pkce_verifier cookie.
+                        const exRes = await fetch('/api/oauth-exchange', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ 
+                                code, 
+                                client_id: clientId, 
+                                client_secret: clientSecret, 
+                                redirect_uri: REDIRECT_URI 
+                            })
+                        });
+                        const exData = await exRes.json();
+                        if (exData.credential_string) {
+                            const current = oauthCredentialsTextarea.value.trim();
+                            const newCreds = exData.credential_string;
+                            // Check if already in list
+                            if (current.includes(newCreds)) {
+                                alert('This account is already in your credentials list.');
+                            } else {
+                                oauthCredentialsTextarea.value = current ? current + '\n' + newCreds : newCreds;
+                                alert('Google account connected and added to credentials list!');
+                            }
+                        } else {
+                            alert('Exchange failed: ' + (exData.error || 'Unknown error'));
+                        }
+                    }
+                };
+            } catch (error) {
+                alert('Error starting OAuth: ' + error.message);
+            }
+        });
+
+        manualExchangeBtn.addEventListener('click', async () => {
+            const input = manualCodeInput.value.trim();
+            if (!input) return;
+
+            let code = input;
+            if (input.includes('code=')) {
+                try {
+                    const url = new URL(input.startsWith('http') ? input : 'http://localhost?' + input);
+                    code = url.searchParams.get('code') || input;
+                } catch (e) {
+                    // Fallback to raw input if URL parsing fails
+                }
+            }
+
+            const clientId = clientIdInput.value.trim();
+            const clientSecret = clientSecretInput.value.trim();
+
+            try {
+                const exRes = await fetch('/api/oauth-exchange', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        code, 
+                        client_id: clientId, 
+                        client_secret: clientSecret, 
+                        redirect_uri: REDIRECT_URI 
+                    })
+                });
+                const exData = await exRes.json();
+                if (exData.credential_string) {
+                    const current = oauthCredentialsTextarea.value.trim();
+                    const newCreds = exData.credential_string;
+                    if (current.includes(newCreds)) {
+                        alert('This account is already in your credentials list.');
+                    } else {
+                        oauthCredentialsTextarea.value = current ? current + '\n' + newCreds : newCreds;
+                        alert('Google account exchanged and added successfully!');
+                        manualCodeInput.value = '';
+                    }
+                } else {
+                    alert('Exchange failed: ' + (exData.error || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Error exchanging code: ' + error.message);
+            }
+        });
+
+        oauthForm.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const accessToken = oauthAccessTokenInput.value.trim();
+            const oauthCredentials = oauthCredentialsTextarea.value.trim();
+
+            oauthResultDiv.style.display = 'none';
+            oauthResultDiv.className = '';
+
+            try {
+                const response = await fetch('/api/oauth-credentials', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        access_token: accessToken,
+                        oauth_credentials: oauthCredentials
+                    })
+                });
+
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || 'An unknown error occurred.');
+
+                while (oauthResultDiv.firstChild) oauthResultDiv.removeChild(oauthResultDiv.firstChild);
+
+                const displaySuccess = (token) => {
+                    const baseUrl = window.location.origin;
+                    const openAIUrl = `${baseUrl}/chat/completions`;
+
+                    const h2 = document.createElement('h2');
+                    h2.textContent = 'Success!';
+                    oauthResultDiv.appendChild(h2);
+
+                    const p1 = document.createElement('p');
+                    p1.textContent = 'OAuth credentials saved for Access Token:';
+                    oauthResultDiv.appendChild(p1);
+
+                    const pCode = document.createElement('p');
+                    const code = document.createElement('code');
+                    code.textContent = token;
+                    pCode.appendChild(code);
+                    oauthResultDiv.appendChild(pCode);
+
+                    oauthResultDiv.appendChild(document.createElement('hr'));
+
+                    const h3 = document.createElement('h3');
+                    h3.textContent = 'How to Use';
+                    oauthResultDiv.appendChild(h3);
+
+                    const createCurlExample = (title, command) => {
+                        const h4 = document.createElement('h4');
+                        h4.textContent = title;
+                        oauthResultDiv.appendChild(h4);
+                        const pre = document.createElement('pre');
+                        const codeElem = document.createElement('code');
+                        codeElem.style.display = 'block';
+                        codeElem.style.whiteSpace = 'pre-wrap';
+                        codeElem.style.wordBreak = 'break-all';
+                        codeElem.textContent = command;
+                        pre.appendChild(codeElem);
+                        oauthResultDiv.appendChild(pre);
+                    };
+
+                    createCurlExample('Gemini CLI / Antigravity Mode', `curl -X POST \\\n  -H "Authorization: Bearer ${token}" \\\n  -H "X-Auth-Mode: gemini-cli" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model": "gemini-2.5-pro", "messages": [{"role": "user", "content": "Hello"}]}' \\\n  "${openAIUrl}"`);
+                };
+
+                displaySuccess(data.access_token);
+
+            } catch (error) {
+                oauthResultDiv.className = 'error';
+                oauthResultDiv.innerHTML = '';
+                const strong = document.createElement('strong');
+                strong.textContent = 'Error: ';
+                oauthResultDiv.appendChild(strong);
+                oauthResultDiv.appendChild(document.createTextNode(error.message));
+            }
+
+            oauthResultDiv.style.display = 'block';
+        });
+
+        document.getElementById('oauthDeleteButton').addEventListener('click', async () => {
+            const accessToken = oauthAccessTokenInput.value.trim();
+            if (!accessToken) {
+                alert('Please enter an Access Token to delete.');
+                return;
+            }
+
+            if (!confirm(`Are you sure you want to delete all OAuth credentials for the token "${accessToken}"? This action cannot be undone.`)) {
+                return;
+            }
+
+            oauthResultDiv.style.display = 'none';
+            oauthResultDiv.className = '';
+
+            try {
+                const response = await fetch('/api/oauth-credentials', {
+                    method: 'DELETE',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Access-Token': accessToken
+                    }
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || data.message || 'An unknown error occurred.');
+                }
+
+                while (oauthResultDiv.firstChild) {
+                    oauthResultDiv.removeChild(oauthResultDiv.firstChild);
+                }
+
+                const strong = document.createElement('strong');
+                strong.textContent = 'Success: ';
+                oauthResultDiv.appendChild(strong);
+                oauthResultDiv.appendChild(document.createTextNode(data.message));
+
+                oauthAccessTokenInput.value = '';
+                clientIdInput.value = '';
+                clientSecretInput.value = '';
+                refreshTokenInput.value = '';
+                projectIdInput.value = '';
+
+            } catch (error) {
+                oauthResultDiv.className = 'error';
+                while (oauthResultDiv.firstChild) {
+                    oauthResultDiv.removeChild(oauthResultDiv.firstChild);
+                }
+                const strong = document.createElement('strong');
+                strong.textContent = 'Error: ';
+                oauthResultDiv.appendChild(strong);
+                oauthResultDiv.appendChild(document.createTextNode(error.message));
+            }
+
+            oauthResultDiv.style.display = 'block';
         });
     </script>
 </body>

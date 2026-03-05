@@ -15,5 +15,6 @@
     "noEmit": true
   },
   "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.html"],
+  "files": ["src/types.d.ts"],
   "exclude": ["node_modules", "dist"]
 }

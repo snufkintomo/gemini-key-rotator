@@ -63,23 +63,13 @@ Navigate to the **AI Gateway** section in your Cloudflare dashboard and create a
 
 ### 4. Configure `wrangler.toml`
 
-Rename `wrangler.toml.example` to `wrangler.toml` and fill in your Cloudflare account details. The `database_id` for your D1 database should already be present.
+Copy `wrangler.toml.example` to `wrangler.toml` and fill in your Cloudflare account details.
 
-```toml
-name = "gemini-key-rotator"
-main = "src/index.ts"
-compatibility_date = "2024-05-02"
-
-[[d1_databases]]
-binding = "DB"
-database_name = "gemini-key-rotator-db"
-database_id = "your-database-id"
-
-[durable_objects]
-bindings = [
-  { name = "KEY_ROTATOR", class_name = "KeyRotator" }
-]
+```bash
+cp wrangler.toml.example wrangler.toml
 ```
+
+Then, update `wrangler.toml` with your specific configuration (D1 database name/ID, etc.). Note that `wrangler.toml` is ignored by git to protect your secrets.
 
 ### 5. Set Environment Variables
 

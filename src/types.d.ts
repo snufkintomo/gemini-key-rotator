@@ -1,6 +1,35 @@
-declare module '*.html' {
+declare module './admin.html' {
     const content: string;
     export default content;
+}
+
+declare module './login.html' {
+    const content: string;
+    export default content;
+}
+
+export interface KeyState {
+	exhaustedUntil?: { [model: string]: number };
+	invalid?: boolean;
+}
+
+export interface ApiCredentials {
+	api_keys: string;
+	current_key_index: number;
+	key_states: string | null; // JSON string of KeyState[]
+	oauth_credentials?: string;
+	current_oauth_index?: number;
+	oauth_key_states?: string | null; // JSON string of KeyState[]
+}
+
+export interface GeminiModel {
+	name: string;
+	description: string;
+	[key: string]: any;
+}
+
+export interface GeminiModelsList {
+	models: GeminiModel[];
 }
 
 export interface GeminiPart {
@@ -26,13 +55,14 @@ export interface GeminiResponse {
         promptTokenCount?: number;
         candidatesTokenCount?: number;
         totalTokenCount?: number;
+        thoughtsTokenCount?: number;
     };
 }
 
 // New Claude-specific interfaces (simplified for plan, will be detailed in implementation)
 // Based on Anthropic's Messages API
 export interface ClaudeMessagePart {
-    type: 'text' | 'image' | 'tool_use' | 'tool_result' | 'thinking';
+    type: 'text' | 'image' | 'audio' | 'document' | 'tool_use' | 'tool_result' | 'thinking';
     text?: string;
     source?: {
         type: 'base64';
@@ -70,6 +100,10 @@ export interface ClaudeCompletionRequest {
     temperature?: number;
     top_p?: number;
     top_k?: number;
+    thinking?: {
+        type: 'enabled';
+        budget_tokens?: number;
+    };
     metadata?: {
         user_id?: string;
     };
@@ -116,5 +150,125 @@ export interface ClaudeCompletionResponse {
     usage: {
         input_tokens: number;
         output_tokens: number;
+    };
+}
+
+// OAuth-related types for Gemini CLI and Antigravity support
+export interface OAuthCredentials {
+    client_id: string;
+    client_secret: string;
+    refresh_token: string;
+    project_id?: string; // For Gemini CLI
+    email?: string;
+    tier?: string;
+}
+
+export interface GoogleTokenResponse {
+    access_token: string;
+    expires_in: number;
+    refresh_token?: string;
+    scope: string;
+    token_type: string;
+}
+
+export interface GeminiCliRequest {
+    model: string;
+    project: string;
+    request: {
+        contents: {
+            role: 'user' | 'model';
+            parts: GeminiPart[];
+        }[];
+        generationConfig: {
+            maxOutputTokens?: number;
+            temperature?: number;
+            topK?: number;
+            topP?: number;
+            stopSequences?: string[];
+            thinkingConfig?: {
+                thinkingBudget: number;
+                includeThoughts: boolean;
+            };
+            responseSchema?: any;
+            responseMimeType?: string;
+        };
+        safetySettings?: {
+            category: string;
+            threshold: string;
+        }[];
+        tools?: {
+            functionDeclarations: {
+                name: string;
+                description: string;
+                parameters: Record<string, any>;
+            }[];
+        }[];
+        toolConfig?: {
+            functionCallingConfig: {
+                mode: 'AUTO' | 'NONE' | 'ANY';
+                allowedFunctionNames?: string[];
+            };
+        };
+        systemInstruction?: {
+            role?: 'user';
+            parts: { text: string }[];
+        };
+    };
+}
+
+export interface AntigravityRequest {
+    project: string;
+    userAgent: string;
+    requestType: string;
+    requestId: string;
+    model: string;
+    request: {
+        contents: {
+            role: 'user' | 'model';
+            parts: GeminiPart[];
+        }[];
+        generationConfig: {
+            maxOutputTokens?: number;
+            temperature?: number;
+            topK?: number;
+            topP?: number;
+            stopSequences?: string[];
+            thinkingConfig?: {
+                thinkingBudget: number;
+                includeThoughts: boolean;
+            };
+        };
+        safetySettings?: {
+            category: string;
+            threshold: string;
+        }[];
+        tools?: {
+            functionDeclarations: {
+                name: string;
+                description: string;
+                parameters: Record<string, any>;
+            }[];
+        }[];
+        toolConfig?: {
+            functionCallingConfig: {
+                mode: 'AUTO' | 'NONE' | 'ANY';
+                allowedFunctionNames?: string[];
+            };
+        };
+        systemInstruction?: {
+            role?: 'user';
+            parts: { text: string }[];
+        };
+        sessionId?: string;
+    };
+}
+
+export interface ProjectMetadata {
+    project_id: string;
+    project_number: string;
+    name: string;
+    parent?: {
+        type: string;
+        id: string;
     };
 }
