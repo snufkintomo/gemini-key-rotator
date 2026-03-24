@@ -115,15 +115,36 @@ export class KeyRotator {
 
 	async fetch(request: Request): Promise<Response> {
 		const clonedRequest = request.clone();
+		const requestUrl = new URL(request.url);
 		const userAccessToken = request.headers.get('X-Access-Token');
 		const authMode = request.headers.get('X-Auth-Mode');
 		const protocol = authMode as Protocol;
+
+		// Handle key health status requests (Internal/Admin only)
+		if (requestUrl.pathname === '/admin/key-status' && request.method === 'GET') {
+			if (!userAccessToken) return createErrorResponse('Unauthorized', 401, protocol);
+
+			const stmt = this.ctx.env.DB.prepare(
+				'SELECT api_keys, key_states, oauth_credentials, oauth_key_states FROM api_credentials WHERE access_token = ?'
+			);
+			const dbResult = await stmt.bind(userAccessToken).first<any>();
+			if (!dbResult) return createErrorResponse('Not Found', 404, protocol);
+
+			return new Response(
+				JSON.stringify({
+					api_keys: dbResult.api_keys ? dbResult.api_keys.split(',') : [],
+					key_states: JSON.parse(dbResult.key_states || '[]'),
+					oauth_credentials: dbResult.oauth_credentials ? dbResult.oauth_credentials.split(',') : [],
+					oauth_key_states: JSON.parse(dbResult.oauth_key_states || '[]'),
+				}),
+				{ headers: { 'Content-Type': 'application/json' } }
+			);
+		}
 
 		if (!userAccessToken) {
 			return createErrorResponse('Unauthorized: Access token is required.', 401, protocol);
 		}
 
-		const requestUrl = new URL(request.url);
 		const pathname = requestUrl.pathname;
 		const isMetadataRequest =
 			request.method === 'GET' &&

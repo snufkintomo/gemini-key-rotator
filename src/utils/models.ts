@@ -59,14 +59,19 @@ export function getGeminiModelForOpenAI(openAIModel: string): string {
 	// Map specific OpenAI models to Gemini equivalents
 	switch (openAIModel.toLowerCase()) {
 		case 'o3':
+		case 'o3-mini':
 		case 'gpt-5':
 			return 'gemini-pro-latest';
 		case 'gpt-4':
 		case 'gpt-4o':
 			return 'gemini-flash-latest';
 		case 'o1':
+		case 'o1-mini':
 		case 'o1-preview':
-			return 'gemini-flash-latest'; // Best guess for reasoning model
+			return 'gemini-flash-latest';
+		case 'gpt-4o-mini':
+		case 'gpt-3.5-turbo':
+			return 'gemini-flash-lite-latest';
 		default:
 			// For unknown models, try to extract a valid Gemini model name if embedded
 			if (openAIModel.includes('gemini-')) {

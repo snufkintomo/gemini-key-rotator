@@ -235,7 +235,52 @@
         .tab-content.active {
             display: block;
         }
-    </style>
+
+        /* Key Health Status Styles */
+        .key-status-container {
+            margin-top: 1.5rem;
+            border-top: 1px solid var(--border-color);
+            padding-top: 1rem;
+        }
+        .key-status-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+        .key-status-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.75rem;
+            background: #f8fafc;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            font-size: 0.9rem;
+        }
+        .key-status-info {
+            display: flex;
+            flex-direction: column;
+        }
+        .key-status-raw {
+            font-family: monospace;
+            font-weight: 500;
+        }
+        .key-status-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        .badge-healthy { background: #c6f6d5; color: #22543d; }
+        .badge-exhausted { background: #feebc8; color: #744210; }
+        .badge-invalid { background: #fed7d7; color: #822727; }
+        .exhausted-models {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            margin-top: 0.25rem;
+        }
     </style>
 </head>
 <body>
@@ -268,6 +313,12 @@
             </form>
 
             <div id="result"></div>
+
+            <!-- Key Health Section for API Keys -->
+            <div id="api-key-health" class="key-status-container" style="display: none;">
+                <h3>Current Key Health</h3>
+                <div id="api-key-status-list" class="key-status-list"></div>
+            </div>
         </div>
 
         <!-- OAuth Credentials Tab -->
@@ -314,6 +365,12 @@
             </form>
 
             <div id="oauthResult"></div>
+
+            <!-- Key Health Section for OAuth -->
+            <div id="oauth-key-health" class="key-status-container" style="display: none;">
+                <h3>Current Credential Health</h3>
+                <div id="oauth-key-status-list" class="key-status-list"></div>
+            </div>
         </div>
 
         <!-- Statistics Tab -->
@@ -1050,6 +1107,62 @@
         const accessTokenInput = document.getElementById('accessToken');
         const apiKeysTextarea = document.getElementById('apiKeys');
 
+        async function updateKeyHealth(token, type) {
+            const healthContainer = document.getElementById(type === 'api' ? 'api-key-health' : 'oauth-key-health');
+            const listContainer = document.getElementById(type === 'api' ? 'api-key-status-list' : 'oauth-key-status-list');
+            
+            try {
+                const res = await fetch(`/api/key-status?access_token=${encodeURIComponent(token)}`);
+                if (!res.ok) {
+                    healthContainer.style.display = 'none';
+                    return;
+                }
+                const data = await res.json();
+                const keys = type === 'api' ? data.api_keys : data.oauth_credentials;
+                const states = type === 'api' ? data.key_states : data.oauth_key_states;
+
+                if (!keys || keys.length === 0) {
+                    healthContainer.style.display = 'none';
+                    return;
+                }
+
+                listContainer.innerHTML = '';
+                keys.forEach((key, idx) => {
+                    const state = states[idx] || {};
+                    const isInvalid = state.invalid;
+                    const exhaustedUntil = state.exhaustedUntil || {};
+                    const now = Date.now();
+                    
+                    const exhaustedModels = Object.entries(exhaustedUntil)
+                        .filter(([_, until]) => until > now)
+                        .map(([model, until]) => `${model.replace(/^models\//, '')} (until ${new Date(until).toLocaleTimeString()})`);
+
+                    const item = document.createElement('div');
+                    item.className = 'key-status-item';
+                    
+                    let statusBadge = '<span class="key-status-badge badge-healthy">Healthy</span>';
+                    if (isInvalid) {
+                        statusBadge = '<span class="key-status-badge badge-invalid">Invalid</span>';
+                    } else if (exhaustedModels.length > 0) {
+                        statusBadge = '<span class="key-status-badge badge-exhausted">Exhausted</span>';
+                    }
+
+                    item.innerHTML = `
+                        <div class="key-status-info">
+                            <span class="key-status-raw">${maskKey(key)}</span>
+                            ${exhaustedModels.length > 0 ? `<div class="exhausted-models">Exhausted: ${exhaustedModels.join(', ')}</div>` : ''}
+                        </div>
+                        ${statusBadge}
+                    `;
+                    listContainer.appendChild(item);
+                });
+                healthContainer.style.display = 'block';
+            } catch (e) {
+                console.error('Error fetching key health:', e);
+                healthContainer.style.display = 'none';
+            }
+        }
+
         let fetchTimeout;
         accessTokenInput.addEventListener('input', () => {
             clearTimeout(fetchTimeout);
@@ -1064,20 +1177,19 @@
                         });
                         if (response.ok) {
                             const data = await response.json();
-                            // Only modify the textarea if the api_keys property exists in the response.
-                            // This handles found keys (string) and soft-deleted keys (empty string).
-                            // It avoids clearing the textarea for new/unfound tokens (where the property is absent).
                             if (data.hasOwnProperty('api_keys')) {
                                 apiKeysTextarea.value = data.api_keys ? data.api_keys.replace(/,/g, '\n') : '';
+                                updateKeyHealth(token, 'api');
                             }
+                        } else {
+                            document.getElementById('api-key-health').style.display = 'none';
                         }
-                        // If response is not ok (e.g. token not found), do nothing to preserve user input.
                     } catch (error) {
                         console.error('Error fetching keys:', error);
-                        // On network error, do nothing to preserve user input.
                     }
+                } else {
+                    document.getElementById('api-key-health').style.display = 'none';
                 }
-                // If token is too short, do nothing to preserve user input.
             }, 500);
         });
 

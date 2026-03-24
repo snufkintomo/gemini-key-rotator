@@ -531,6 +531,37 @@ export default {
           }
         }
 
+        // Handle Key Health API
+        if (requestUrl.pathname === '/api/key-status') {
+          const corsHeaders = getCorsHeaders(request);
+          const headers = new Headers(corsHeaders);
+
+          if (request.method === 'GET') {
+            // First check if a token is provided in the query string (for admin convenience)
+            let accessToken = requestUrl.searchParams.get('access_token');
+            if (!accessToken) {
+              accessToken = request.headers.get('X-Access-Token');
+            }
+
+            if (!accessToken) {
+              return jsonResponse({ error: 'X-Access-Token header is required.' }, 400, headers);
+            }
+            const id = env.KEY_ROTATOR.idFromName(accessToken);
+            const stub = env.KEY_ROTATOR.get(id, { locationHint: 'wnam' });
+            
+            const forwardRequest = new Request(request.url, request);
+            forwardRequest.headers.set('X-Access-Token', accessToken);
+            forwardRequest.headers.set('X-Auth-Mode', 'google'); // Default protocol for internal errors
+            
+            // Re-route to the internal Durable Object health endpoint
+            const internalUrl = new URL(request.url);
+            internalUrl.pathname = '/admin/key-status';
+            
+            const response = await stub.fetch(new Request(internalUrl.toString(), forwardRequest));
+            return new Response(response.body, { status: response.status, headers: new Headers(corsHeaders) });
+          }
+        }
+
         // Handle Statistics API
         if (requestUrl.pathname === '/api/statistics') {
           const corsHeaders = getCorsHeaders(request);
