@@ -21,6 +21,18 @@ export class SystemContext {
 		return this.env.ENABLE_ORG_GEMINI_API_BASE_URL === 'true';
 	}
 
+	get isUsageStatisticsEnabled(): boolean {
+		return this.env.ENABLE_USAGE_STATISTICS === 'true';
+	}
+
+	get notificationEmail(): string | undefined {
+		return this.env.NOTIFICATION_EMAIL;
+	}
+
+	get resendApiKey(): string | undefined {
+		return this.env.RESEND_API_KEY;
+	}
+
 	get cloudflareAIGatewayBase(): string {
 		return `https://gateway.ai.cloudflare.com/v1/${this.env.CLOUDFLARE_AI_GATEWAY_ID}/${this.env.CLOUDFLARE_AI_GATEWAY_NAME}`;
 	}

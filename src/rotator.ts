@@ -12,6 +12,7 @@ import { SystemContext } from './utils/context';
 import { createErrorResponse, Protocol } from './utils/errors';
 import { StorageHelper } from './utils/storage';
 import { getStandardRotationIndex, parseCredentials } from './utils/credentials';
+import { sendInvalidTokenEmail } from './utils/email';
 
 // --- Types ---
 export interface Env {
@@ -24,6 +25,9 @@ export interface Env {
 	ENABLE_API_LOGGING?: string;
 	ENABLE_CLOUDFLARE_AI_GATEWAY?: string;
 	ENABLE_ORG_GEMINI_API_BASE_URL?: string;
+	ENABLE_USAGE_STATISTICS?: string;
+	NOTIFICATION_EMAIL?: string;
+	RESEND_API_KEY?: string;
 }
 
 export class KeyRotator {
@@ -54,6 +58,61 @@ export class KeyRotator {
 		return endpoints[currentIndex];
 	}
 
+	async recordUsage(
+		rawKey: string,
+		keyType: 'api_key' | 'oauth',
+		userToken: string,
+		success: boolean,
+		is429: boolean,
+		mode: string,
+		model: string
+	) {
+		if (!this.ctx.isUsageStatisticsEnabled) return;
+
+		const today = new Date().toISOString().split('T')[0];
+		const successInc = success ? 1 : 0;
+		const error429Inc = is429 ? 1 : 0;
+		const safeMode = mode || 'unknown';
+		const safeModel = model || 'unknown';
+
+		const query = `
+			INSERT INTO api_key_usage (raw_key, key_type, usage_date, user_access_token, mode, model, request_count, success_count, error_429_count)
+			VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+			ON CONFLICT(raw_key, usage_date, user_access_token, mode, model) DO UPDATE SET
+				request_count = request_count + 1,
+				success_count = success_count + ?,
+				error_429_count = error_429_count + ?
+		`;
+
+		try {
+			await this.ctx.env.DB.prepare(query)
+				.bind(
+					rawKey,
+					keyType,
+					today,
+					userToken,
+					safeMode,
+					safeModel,
+					successInc,
+					error429Inc,
+					successInc,
+					error429Inc
+				)
+				.run();
+		} catch (e) {
+			console.error('Error recording usage statistics:', e);
+		}
+	}
+
+	async notifyInvalidToken(tokenType: 'api_key' | 'oauth', rawToken: string, reason: string) {
+		const resendKey = this.ctx.resendApiKey;
+		const toEmail = this.ctx.notificationEmail;
+
+		if (resendKey && toEmail) {
+			this.ctx.waitUntil(sendInvalidTokenEmail(resendKey, toEmail, tokenType, rawToken, reason));
+		}
+	}
+
 	async fetch(request: Request): Promise<Response> {
 		const clonedRequest = request.clone();
 		const userAccessToken = request.headers.get('X-Access-Token');
@@ -64,8 +123,22 @@ export class KeyRotator {
 			return createErrorResponse('Unauthorized: Access token is required.', 401, protocol);
 		}
 
+		const requestUrl = new URL(request.url);
+		const pathname = requestUrl.pathname;
+		const isMetadataRequest =
+			request.method === 'GET' &&
+			(pathname.endsWith('/models') ||
+				pathname.includes('/models/') ||
+				pathname.includes('/v1/models') ||
+				pathname.includes('/v1beta/models'));
+
 		const rawModel = await parseRequestModel(clonedRequest.clone() as any);
 		const resolved = resolveModelAndAuthMode(rawModel, authMode, userAccessToken);
+
+		// Handle /oauth/models explicitly to force OAuth mode
+		if (pathname.includes('/oauth/models')) {
+			resolved.useOAuth = true;
+		}
 		const model = resolved.model;
 		const isOAuthMode = resolved.useOAuth;
 
@@ -141,7 +214,13 @@ export class KeyRotator {
 		}
 
 		const doProxy = async (apiKeyToUse: string, requestToProxy: Request) => {
-			const proxyReqBody = requestToProxy.method === 'POST' ? await requestToProxy.clone().json() : null;
+			const proxyReqBody =
+				requestToProxy.method === 'POST'
+					? await requestToProxy
+							.clone()
+							.text()
+							.then((t) => (t ? JSON.parse(t) : null))
+					: null;
 			const pathname = new URL(requestToProxy.url).pathname;
 
 			const handleGeminiRef = (req: Request, key: string, mod?: string) =>
@@ -155,14 +234,15 @@ export class KeyRotator {
 							stream,
 							this.ctx.env.DB,
 							this.ctx.waitUntil.bind(this.ctx),
-					this.ctx.isLoggingEnabled,
-					token
-				),
-			this.ctx.state,
-			mod,
-			this.ctx.env.OAUTH_CLIENT_ID,
-			this.ctx.env.OAUTH_CLIENT_SECRET
-		);
+							this.ctx.isLoggingEnabled,
+							token
+						),
+					this.ctx.state,
+					mod,
+					this.ctx.env.OAUTH_CLIENT_ID,
+					this.ctx.env.OAUTH_CLIENT_SECRET,
+					this.ctx
+				);
 
 			if (authMode === 'openai') {
 				return handleOpenAI(
@@ -195,6 +275,21 @@ export class KeyRotator {
 
 		let response = await doProxy(apiKey, clonedRequest.clone() as any);
 
+		// Record initial usage (exclude metadata requests)
+		if (!isMetadataRequest) {
+			this.ctx.waitUntil(
+				this.recordUsage(
+					apiKey,
+					isOAuthMode ? 'oauth' : 'api_key',
+					userAccessToken,
+					response.ok,
+					response.status === 429,
+					authMode || 'google',
+					model || 'unknown'
+				)
+			);
+		}
+
 		let attemptCount = 1;
 		let activeKeys = isOAuthMode ? oauthCredentialsList : apiKeys;
 		let activeStates = isOAuthMode ? oauthKeyStates : keyStates;
@@ -204,6 +299,13 @@ export class KeyRotator {
 		while ([401, 403, 429, 500, 502, 503, 524].includes(response.status) && attemptCount < maxAttempts) {
 			if (response.status === 401 || response.status === 403) {
 				activeStates[activeIndex] = { ...activeStates[activeIndex], invalid: true };
+				this.ctx.waitUntil(
+					this.notifyInvalidToken(
+						isOAuthMode ? 'oauth' : 'api_key',
+						apiKey,
+						`API returned ${response.status}`
+					)
+				);
 			} else if (response.status === 429) {
 				const cooldown = 60 * 1000;
 				const currentState = activeStates[activeIndex] || {};
@@ -239,6 +341,21 @@ export class KeyRotator {
 			apiKey = activeKeys[activeIndex];
 			attemptCount++;
 			response = await doProxy(apiKey, clonedRequest.clone() as any);
+
+			// Record retry usage (exclude metadata requests)
+			if (!isMetadataRequest) {
+				this.ctx.waitUntil(
+					this.recordUsage(
+						apiKey,
+						isOAuthMode ? 'oauth' : 'api_key',
+						userAccessToken,
+						response.ok,
+						response.status === 429,
+						authMode || 'google',
+						model || 'unknown'
+					)
+				);
+			}
 		}
 
 		let updatePromise;

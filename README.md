@@ -20,6 +20,12 @@ The project features a modular architecture with native compatibility layers for
 - **Detailed Logging:** Usage tracking, performance metrics, and request/response logging stored in **Cloudflare D1**.
 - **AI Gateway Integration:** Seamless integration with Cloudflare AI Gateway for enhanced observability and caching.
 - **OAuth 2.0 Management:** Built-in flow for authorizing and exchanging Google Cloud credentials with PKCE support.
+- **Enhanced Statistics & Monitoring:** 
+    - Real-time usage tracking by API Key, User Token, and Model.
+    - Interactive summary cards for daily health checks.
+    - Advanced filtering (Date Range, Search, 429 Errors).
+    - CSV export for external analysis.
+    - Automatic statistics cleanup mechanism.
 
 ## Architecture
 
@@ -70,6 +76,18 @@ CREATE TABLE api_logs (
     response_headers TEXT,
     response_body TEXT,
     duration_ms INTEGER
+);
+CREATE TABLE api_key_usage (
+    raw_key TEXT,
+    key_type TEXT,
+    usage_date TEXT,
+    user_access_token TEXT,
+    mode TEXT,
+    model TEXT,
+    request_count INTEGER DEFAULT 0,
+    success_count INTEGER DEFAULT 0,
+    error_429_count INTEGER DEFAULT 0,
+    PRIMARY KEY (raw_key, usage_date, user_access_token, mode, model)
 );"
 ```
 

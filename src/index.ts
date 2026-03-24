@@ -156,6 +156,21 @@ async function logResponse(env: Env, startTime: number, response: Response, logI
 
 // --- Cloudflare Worker Entry Point ---
 export default {
+  async scheduled(event: any, env: Env, ctx: any) {
+    // Daily cleanup: Delete statistics older than 30 days
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - 30);
+    const cutoffStr = cutoffDate.toISOString().split('T')[0];
+
+    try {
+      const stmt = env.DB.prepare('DELETE FROM api_key_usage WHERE usage_date < ?');
+      const { meta } = await stmt.bind(cutoffStr).run();
+      console.log(`Auto-cleanup: Deleted ${meta.changes} statistics entries older than ${cutoffStr}`);
+    } catch (e) {
+      console.error('Auto-cleanup failed:', e);
+    }
+  },
+
   async fetch(
     request: Request,
     env: Env,
@@ -514,6 +529,35 @@ export default {
             }
             return jsonResponse({ error: 'Not Found' }, 404, headers);
           }
+        }
+
+        // Handle Statistics API
+        if (requestUrl.pathname === '/api/statistics') {
+          const corsHeaders = getCorsHeaders(request);
+          const headers = new Headers(corsHeaders);
+
+          if (request.method === 'GET') {
+            try {
+              const stmt = env.DB.prepare("SELECT * FROM api_key_usage ORDER BY usage_date DESC, request_count DESC");
+              const result = await stmt.all();
+              return jsonResponse(result.results, 200, headers);
+            } catch (e: any) {
+              console.error("Error fetching statistics:", e);
+              return jsonResponse({ error: 'Failed to fetch statistics.' }, 500, headers);
+            }
+          }
+
+          if (request.method === 'DELETE') {
+            try {
+              const stmt = env.DB.prepare("DELETE FROM api_key_usage");
+              const { meta } = await stmt.run();
+              return jsonResponse({ message: 'Statistics cleared successfully.', deletedCount: meta.changes }, 200, headers);
+            } catch (e: any) {
+              console.error("Error clearing statistics:", e);
+              return jsonResponse({ error: 'Failed to clear statistics.' }, 500, headers);
+            }
+          }
+          return jsonResponse({ error: 'Method not allowed' }, 405, headers);
         }
 
         return new Response('Not Found', { status: 404 });

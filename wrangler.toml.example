@@ -16,6 +16,12 @@ compatibility_date = "2024-05-06"
 #ENABLE_API_LOGGING = "true"
 #ENABLE_CLOUDFLARE_AI_GATEWAY = "true"
 ENABLE_ORG_GEMINI_API_BASE_URL = "true"
+# ENABLE_USAGE_STATISTICS = "true"
+# NOTIFICATION_EMAIL = "your_notification_email_address"
+# RESEND_API_KEY = "re_your_api_key"
+
+[triggers]
+crons = ["0 0 * * *"]
 
 [[rules]]
 type = "Text"

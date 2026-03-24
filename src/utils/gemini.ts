@@ -2,6 +2,7 @@ import { getOAuthAccessToken, discoverProjectId, parseOAuthCredentials } from '.
 import { parseStream, parseStreamFlush } from './streams';
 import { getGeminiModelForGemini, mapModelForInternalApi } from './models';
 import type { OAuthCredentials } from '../types';
+import { SystemContext } from './context';
 
 const API_VERSION = 'v1beta';
 
@@ -20,20 +21,65 @@ export async function handleGeminiCli(
 	credentials: OAuthCredentials,
 	state: DurableObjectState,
 	proxyRequest: (request: Request, isStreaming: boolean, accessToken?: string) => Promise<Response>,
-	model?: string
+	model?: string,
+	ctx?: SystemContext
 ): Promise<Response> {
 	try {
 		const reqAny = request as any;
 		const requestUrl = new URL(request.url);
-		const modelMatch = requestUrl.pathname.match(/\/models\/([^/:]+)/);
-		const urlModel = modelMatch ? modelMatch[1] : undefined;
 
-		const accessToken = await getOAuthAccessToken(state, credentials);
+		const accessToken = await getOAuthAccessToken(state, credentials, ctx);
 		let projectId = credentials.project_id;
 		if (!projectId) {
 			projectId = await discoverProjectId(accessToken);
 			credentials.project_id = projectId;
 		}
+
+		// Handle OAuth Model List (via retrieveUserQuota)
+		if (requestUrl.pathname.includes('/oauth/models')) {
+			const url = `https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota`;
+			const headers = {
+				Authorization: `Bearer ${accessToken}`,
+				'Content-Type': 'application/json',
+				...CODE_ASSIST_HEADERS,
+			};
+
+			const body = {
+				project: projectId,
+			};
+
+			const response = await proxyRequest(
+				new Request(url, {
+					method: 'POST',
+					headers,
+					body: JSON.stringify(body),
+				} as any),
+				false,
+				accessToken
+			);
+
+			if (!response.ok) return response;
+
+			const data = await response.json() as any;
+			// Transform to Gemini listModels format from buckets
+			const models = (data.buckets || [])
+				.filter((b: any) => b.modelId)
+				.map((b: any) => ({
+					name: `models/${b.modelId}`,
+					displayName: b.modelId,
+					description: `Cloud Code Internal Model (Remaining: ${b.remainingAmount || 'unknown'})`,
+					supportedGenerationMethods: ['generateContent', 'countTokens'],
+					quota: b, // Extra information for debugging/advanced usage
+				}));
+
+			return new Response(JSON.stringify({ models, buckets: data.buckets || [] }), {
+				status: 200,
+				headers: { 'Content-Type': 'application/json' }
+			});
+		}
+
+		const modelMatch = requestUrl.pathname.match(/\/models\/([^/:]+)/);
+		const urlModel = modelMatch ? modelMatch[1] : undefined;
 
 		const nativeBody = await reqAny.json() as any;
 		const rawModel = model || urlModel || nativeBody.model || 'gemini-2.5-pro';
@@ -172,18 +218,19 @@ export async function handleGemini(
 	state: DurableObjectState,
 	model?: string,
 	defaultClientId?: string,
-	defaultClientSecret?: string
+	defaultClientSecret?: string,
+	ctx?: SystemContext
 ): Promise<Response> {
-	if (apiKey.includes(':')) {
+	const requestUrl = new URL(request.url);
+
+	if (apiKey.includes(':') || requestUrl.pathname.includes('/oauth/models')) {
 		try {
 			const credentials = parseOAuthCredentials(apiKey, defaultClientId, defaultClientSecret);
-			return await handleGeminiCli(request, credentials, state, proxyRequest, model);
+			return await handleGeminiCli(request, credentials, state, proxyRequest, model, ctx);
 		} catch (e: any) {
 			return new Response(`OAuth Error: ${e.message}`, { status: 401 });
 		}
 	}
-
-	const requestUrl = new URL(request.url);
     let apiBaseUrl = await getNextApiBaseUrl();
     const urlModel = getGeminiModelFromPath(requestUrl.pathname);
     

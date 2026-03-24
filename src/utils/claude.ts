@@ -432,7 +432,8 @@ export async function handleClaude(
     }
     
     const modelsMatch = pathname.match(/models\/([^/]+)$/);
-    if (modelsMatch || pathname.endsWith('/models')) {
+    const isModelsList = pathname.endsWith('/models') || pathname.endsWith('/oauth/models');
+    if (modelsMatch || isModelsList) {
         if (method !== 'GET') throw new HttpError('Method not allowed', 405);
         const modelId = modelsMatch ? modelsMatch[1] : undefined;
         return handleModels!(apiKey, modelId, "claude", model);

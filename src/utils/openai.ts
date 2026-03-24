@@ -410,7 +410,7 @@ export async function handleOpenAI(
     }
     
     const modelsMatch = pathname.match(/models\/([^/]+)$/);
-    const isModelsList = pathname.endsWith('/models');
+    const isModelsList = pathname.endsWith('/models') || pathname.endsWith('/oauth/models');
     if (modelsMatch || isModelsList) {
         if (method !== 'GET') throw new HttpError('Method not allowed', 405);
         const modelId = modelsMatch ? modelsMatch[1] : undefined;

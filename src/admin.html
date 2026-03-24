@@ -159,6 +159,76 @@
             color: var(--accent-color);
             border-bottom-color: var(--accent-color);
         }
+        .dim-tab-btn {
+            padding: 8px 16px;
+            background: none;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-weight: 500;
+            color: var(--text-secondary);
+            transition: all 0.2s;
+            flex-grow: 0;
+            width: auto;
+        }
+        .dim-tab-btn.active {
+            background-color: var(--accent-color);
+            color: white;
+            border-color: var(--accent-color);
+        }
+        .table-count {
+            display: inline-block;
+            background: #f1f5f9;
+            color: #64748b;
+            font-size: 0.8rem;
+            padding: 2px 8px;
+            border-radius: 999px;
+            margin-left: 0.5rem;
+            font-weight: 500;
+        }
+        /* Summary Card Styles */
+        .summary-cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+        .summary-card {
+            background: #f8fafc;
+            padding: 1rem;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+            text-align: center;
+            transition: all 0.2s;
+        }
+        .summary-card.clickable {
+            cursor: pointer;
+        }
+        .summary-card.clickable:hover {
+            background: #f1f5f9;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+        .summary-card.active-filter {
+            border-color: var(--danger-color);
+            background: #fff5f5;
+        }
+        .summary-card h4 {
+            margin: 0 0 0.5rem 0;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .summary-card .value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--accent-color);
+        }
+        .summary-card .value.danger {
+            color: var(--danger-color);
+        }
         .tab-content {
             display: none;
         }
@@ -176,6 +246,7 @@
             <button class="tab-button" data-tab="credentials-tab">API Keys</button>
             <button class="tab-button" data-tab="oauth-tab">OAuth Credentials</button>
             <button class="tab-button" data-tab="logs-tab">API Logs</button>
+            <button class="tab-button" data-tab="stats-tab">Statistics</button>
         </div>
 
         <!-- API Keys Tab -->
@@ -243,6 +314,174 @@
             </form>
 
             <div id="oauthResult"></div>
+        </div>
+
+        <!-- Statistics Tab -->
+        <div id="stats-tab" class="tab-content">
+            <h2>API Usage Statistics</h2>
+            <p>Track the daily usage, success rate, and rate limits (429) for each API Key and OAuth Credential.</p>
+
+            <div class="button-group" style="margin-bottom: 1rem;">
+                <button id="loadStatsBtn">Load Statistics</button>
+                <button id="clearStatsBtn" style="background-color: var(--danger-color);">Clear All Statistics</button>
+            </div>
+
+            <div id="statsFilterArea" style="display: none; background: #f1f5f9; padding: 1rem; border-radius: 8px; margin-bottom: 1rem;">
+                <div style="display: flex; gap: 1rem; flex-wrap: wrap; align-items: flex-end;">
+                    <div style="flex: 1; min-width: 200px;">
+                        <label for="statsSearch" style="font-size: 0.85rem;">Search User or Model:</label>
+                        <input type="text" id="statsSearch" placeholder="Search..." style="padding: 8px; font-size: 0.9rem;">
+                    </div>
+                    <div style="width: 150px;">
+                        <label for="statsDateFilter" style="font-size: 0.85rem;">Date Range:</label>
+                        <select id="statsDateFilter" style="width: 100%; padding: 8px; border-radius: 8px; border: 1px solid var(--border-color);">
+                            <option value="all">All Time</option>
+                            <option value="today" selected>Today</option>
+                            <option value="7d">Last 7 Days</option>
+                            <option value="30d">Last 30 Days</option>
+                        </select>
+                    </div>
+                    <button id="downloadCsvBtn" style="background-color: #48bb78; flex-grow: 0; width: auto; font-size: 0.9rem;">Export CSV</button>
+                </div>
+            </div>
+
+            <div id="statsSummary" class="summary-cards" style="display: none;">
+                <div class="summary-card">
+                    <h4>Total Requests</h4>
+                    <div id="sumTotalRequests" class="value">0</div>
+                </div>
+                <div class="summary-card">
+                    <h4>Success Rate</h4>
+                    <div id="sumSuccessRate" class="value">0%</div>
+                </div>
+                <div id="cardErrors429" class="summary-card clickable">
+                    <h4>429 Errors</h4>
+                    <div id="sumErrors429" class="value">0</div>
+                </div>
+            </div>
+
+            <div id="statsDimensionButtons" style="display: none; margin-bottom: 2rem; display: flex; gap: 0.5rem; justify-content: center; border-top: 1px solid var(--border-color); padding-top: 1rem;">
+                <button class="dim-tab-btn dimension-btn active" data-dim="by-key" style="font-size: 0.9rem; padding: 8px 16px;">By Key</button>
+                <button class="dim-tab-btn dimension-btn" data-dim="by-user" style="font-size: 0.9rem; padding: 8px 16px;">By User</button>
+                <button class="dim-tab-btn dimension-btn" data-dim="by-model" style="font-size: 0.9rem; padding: 8px 16px;">By Model</button>
+            </div>
+
+            <div id="statsContainer" style="display: none;">
+                <!-- By Key Section -->
+                <div id="stats-by-key" class="stats-dimension-content">
+                    <h3>Standard API Keys Usage <span id="apiKeyCount" class="table-count"></span></h3>
+                <div style="overflow-x: auto; margin-bottom: 2rem;">
+                    <table class="stats-table" style="width: 100%; border-collapse: collapse; margin-bottom: 1rem;">
+                        <thead>
+                            <tr style="background-color: var(--code-bg);">
+                                <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">API Key</th>
+                                <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">Date</th>
+                                <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Mode</th>
+                                <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">Model</th>
+                                <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Requests</th>
+                                <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Success Rate</th>
+                                <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">429 Errors</th>
+                            </tr>
+                        </thead>
+                        <tbody id="apiKeyStatsBody"></tbody>
+                    </table>
+                </div>
+
+                    <h3>OAuth Credentials Usage <span id="oauthCount" class="table-count"></span></h3>
+                    <div style="overflow-x: auto;">
+                        <table class="stats-table" style="width: 100%; border-collapse: collapse;">
+                            <thead>
+                                <tr style="background-color: var(--code-bg);">
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">OAuth Credential</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">Date</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Mode</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">Model</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Requests</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Success Rate</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">429 Errors</th>
+                                </tr>
+                            </thead>
+                            <tbody id="oauthStatsBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- By User Section -->
+                <div id="stats-by-user" class="stats-dimension-content" style="display: none;">
+                    <h3>Standard API Key Usage by User <span id="userApiKeyCount" class="table-count"></span></h3>
+                    <div style="overflow-x: auto; margin-bottom: 2rem;">
+                        <table class="stats-table" style="width: 100%; border-collapse: collapse;">
+                            <thead>
+                                <tr style="background-color: var(--code-bg);">
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">User Access Token</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">Date</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Mode</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">Model</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Total Requests</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Overall Success Rate</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Total 429 Errors</th>
+                                </tr>
+                            </thead>
+                            <tbody id="userApiStatsBody"></tbody>
+                        </table>
+                    </div>
+
+                    <h3>OAuth Credential Usage by User <span id="userOauthCount" class="table-count"></span></h3>
+                    <div style="overflow-x: auto;">
+                        <table class="stats-table" style="width: 100%; border-collapse: collapse;">
+                            <thead>
+                                <tr style="background-color: var(--code-bg);">
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">User Access Token</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">Date</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Mode</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">Model</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Total Requests</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Overall Success Rate</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Total 429 Errors</th>
+                                </tr>
+                            </thead>
+                            <tbody id="userOauthStatsBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- By Model Section -->
+                <div id="stats-by-model" class="stats-dimension-content" style="display: none;">
+                    <h3>Standard API Key Usage by Model <span id="modelApiKeyCount" class="table-count"></span></h3>
+                    <div style="overflow-x: auto; margin-bottom: 2rem;">
+                        <table class="stats-table" style="width: 100%; border-collapse: collapse;">
+                            <thead>
+                                <tr style="background-color: var(--code-bg);">
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">Model Name</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">Date</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Mode</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Total Requests</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Overall Success Rate</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Total 429 Errors</th>
+                                </tr>
+                            </thead>
+                            <tbody id="modelApiStatsBody"></tbody>
+                        </table>
+                    </div>
+
+                    <h3>OAuth Credential Usage by Model <span id="modelOauthCount" class="table-count"></span></h3>
+                    <div style="overflow-x: auto;">
+                        <table class="stats-table" style="width: 100%; border-collapse: collapse;">
+                            <thead>
+                                <tr style="background-color: var(--code-bg);">
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">Model Name</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">Date</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Mode</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Total Requests</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Overall Success Rate</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Total 429 Errors</th>
+                                </tr>
+                            </thead>
+                            <tbody id="modelOauthStatsBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <!-- Logs Tab -->
@@ -444,6 +683,342 @@
                 }
             } catch (error) {
                 alert('Error clearing logs: ' + error.message);
+            }
+        }
+
+        // Statistics Handling
+        const loadStatsBtn = document.getElementById('loadStatsBtn');
+        const clearStatsBtn = document.getElementById('clearStatsBtn');
+        const statsContainer = document.getElementById('statsContainer');
+        const statsDimensionButtons = document.getElementById('statsDimensionButtons');
+        const apiKeyStatsBody = document.getElementById('apiKeyStatsBody');
+        const oauthStatsBody = document.getElementById('oauthStatsBody');
+        const userApiStatsBody = document.getElementById('userApiStatsBody');
+        const userOauthStatsBody = document.getElementById('userOauthStatsBody');
+        const modelApiStatsBody = document.getElementById('modelApiStatsBody');
+        const modelOauthStatsBody = document.getElementById('modelOauthStatsBody');
+        const statsSearch = document.getElementById('statsSearch');
+        const statsDateFilter = document.getElementById('statsDateFilter');
+        const downloadCsvBtn = document.getElementById('downloadCsvBtn');
+        const statsFilterArea = document.getElementById('statsFilterArea');
+        const statsSummary = document.getElementById('statsSummary');
+        const cardErrors429 = document.getElementById('cardErrors429');
+
+        let allLoadedStats = [];
+        let showOnly429 = false;
+
+        loadStatsBtn.addEventListener('click', loadStatistics);
+        clearStatsBtn.addEventListener('click', clearStatistics);
+
+        // Dimension switching logic
+        document.querySelectorAll('.dimension-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation(); // Prevent bubble up to main tab logic
+                const dim = btn.getAttribute('data-dim');
+                document.querySelectorAll('.dimension-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                
+                document.querySelectorAll('.stats-dimension-content').forEach(content => {
+                    content.style.display = 'none';
+                });
+                document.getElementById(`stats-${dim}`).style.display = 'block';
+            });
+        });
+
+        function maskKey(key) {
+            if (!key) return '-';
+            if (key.length <= 12) return key;
+            return key.substring(0, 6) + '...' + key.substring(key.length - 6);
+        }
+
+        async function loadStatistics() {
+            try {
+                const response = await fetch('/api/statistics');
+                if (!response.ok) throw new Error('Failed to load statistics');
+                allLoadedStats = await response.json();
+                applyFiltersAndRender();
+                statsContainer.style.display = 'block';
+                statsDimensionButtons.style.display = 'flex';
+                statsFilterArea.style.display = 'block';
+                statsSummary.style.display = 'grid';
+            } catch (error) {
+                alert('Error loading statistics: ' + error.message);
+            }
+        }
+
+        function applyFiltersAndRender() {
+            const searchTerm = statsSearch.value.toLowerCase();
+            const dateRange = statsDateFilter.value;
+            
+            let filtered = allLoadedStats;
+
+            // Date Filter
+            if (dateRange !== 'all') {
+                const now = new Date();
+                const todayStr = now.toISOString().split('T')[0];
+                
+                if (dateRange === 'today') {
+                    filtered = filtered.filter(s => s.usage_date === todayStr);
+                } else {
+                    const days = dateRange === '7d' ? 7 : 30;
+                    const cutoff = new Date();
+                    cutoff.setDate(cutoff.getDate() - days);
+                    const cutoffStr = cutoff.toISOString().split('T')[0];
+                    filtered = filtered.filter(s => s.usage_date >= cutoffStr);
+                }
+            }
+
+            // Search Filter
+            if (searchTerm) {
+                filtered = filtered.filter(s => 
+                    (s.user_access_token && s.user_access_token.toLowerCase().includes(searchTerm)) ||
+                    (s.model && s.model.toLowerCase().includes(searchTerm)) ||
+                    (s.raw_key && s.raw_key.toLowerCase().includes(searchTerm))
+                );
+            }
+
+            // Apply "Show Only 429" toggle filter
+            // Note: This only affects the tables, not the summary cards themselves
+            // to allow toggling back and forth.
+            let tableData = filtered;
+            if (showOnly429) {
+                tableData = filtered.filter(s => s.error_429_count > 0);
+            }
+
+            renderStatistics(tableData);
+            updateSummaryCards(filtered);
+        }
+
+        function updateSummaryCards(stats) {
+            const totalRequests = stats.reduce((sum, s) => sum + s.request_count, 0);
+            const totalSuccess = stats.reduce((sum, s) => sum + s.success_count, 0);
+            const total429 = stats.reduce((sum, s) => sum + s.error_429_count, 0);
+            
+            const successRate = totalRequests > 0 
+                ? ((totalSuccess / totalRequests) * 100).toFixed(1) + '%' 
+                : '0%';
+
+            document.getElementById('sumTotalRequests').textContent = totalRequests.toLocaleString();
+            document.getElementById('sumSuccessRate').textContent = successRate;
+            document.getElementById('sumErrors429').textContent = total429.toLocaleString();
+            
+            const errEl = document.getElementById('sumErrors429');
+            if (total429 > 0) errEl.classList.add('danger');
+            else errEl.classList.remove('danger');
+        }
+
+        statsSearch.addEventListener('input', applyFiltersAndRender);
+        statsDateFilter.addEventListener('change', applyFiltersAndRender);
+
+        cardErrors429.addEventListener('click', () => {
+            showOnly429 = !showOnly429;
+            if (showOnly429) {
+                cardErrors429.classList.add('active-filter');
+            } else {
+                cardErrors429.classList.remove('active-filter');
+            }
+            applyFiltersAndRender();
+        });
+
+        downloadCsvBtn.addEventListener('click', () => {
+            if (allLoadedStats.length === 0) return;
+            
+            const headers = ['Key Type', 'Key', 'Date', 'User Token', 'Mode', 'Model', 'Requests', 'Success', '429 Errors'];
+            const rows = allLoadedStats.map(s => [
+                s.key_type,
+                s.raw_key,
+                s.usage_date,
+                s.user_access_token,
+                s.mode,
+                s.model,
+                s.request_count,
+                s.success_count,
+                s.error_429_count
+            ]);
+
+            const csvContent = [
+                headers.join(','),
+                ...rows.map(r => r.map(v => `"${v}"`).join(','))
+            ].join('\n');
+
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement('a');
+            const url = URL.createObjectURL(blob);
+            link.setAttribute('href', url);
+            link.setAttribute('download', `gemini_stats_${new Date().toISOString().split('T')[0]}.csv`);
+            link.style.visibility = 'hidden';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        });
+
+        function renderStatistics(stats) {
+            apiKeyStatsBody.innerHTML = '';
+            oauthStatsBody.innerHTML = '';
+            userApiStatsBody.innerHTML = '';
+            userOauthStatsBody.innerHTML = '';
+            modelApiStatsBody.innerHTML = '';
+            modelOauthStatsBody.innerHTML = '';
+
+            // --- By Key (Original) ---
+            const apiStats = stats.filter(s => s.key_type === 'api_key');
+            const oauthStats = stats.filter(s => s.key_type === 'oauth');
+
+            const createRow = (s) => {
+                const successRate = s.request_count > 0 
+                    ? ((s.success_count / s.request_count) * 100).toFixed(1) + '%' 
+                    : '0%';
+                
+                // Clean model name display
+                const modelName = (s.model || 'Unknown').replace(/^models\//, '');
+                
+                return `
+                    <tr>
+                        <td style="padding: 8px; border: 1px solid var(--border-color); font-family: monospace; word-break: break-all;">${s.raw_key}</td>
+                        <td style="padding: 8px; border: 1px solid var(--border-color); white-space: nowrap;">${s.usage_date}</td>
+                        <td style="padding: 8px; border: 1px solid var(--border-color); text-align: center;"><span style="padding: 2px 6px; border-radius: 4px; background: #ebf8ff; font-size: 0.8rem;">${s.mode}</span></td>
+                        <td style="padding: 8px; border: 1px solid var(--border-color); font-size: 0.9rem;">${modelName}</td>
+                        <td style="padding: 8px; border: 1px solid var(--border-color); text-align: center;">${s.request_count}</td>
+                        <td style="padding: 8px; border: 1px solid var(--border-color); text-align: center;">${successRate}</td>
+                        <td style="padding: 8px; border: 1px solid var(--border-color); text-align: center; color: ${s.error_429_count > 0 ? 'var(--danger-color)' : 'inherit'}">${s.error_429_count}</td>
+                    </tr>
+                `;
+            };
+
+            // Sorting Logic
+            const sortStats = (list, primaryKey = 'displayName') => {
+                return list.sort((a, b) => {
+                    // 1. Date Descending
+                    if (a.usage_date !== b.usage_date) {
+                        return b.usage_date.localeCompare(a.usage_date);
+                    }
+                    // 2. DisplayName / Key Ascending
+                    const valA = a[primaryKey] || '';
+                    const valB = b[primaryKey] || '';
+                    if (valA !== valB) {
+                        return valA.localeCompare(valB);
+                    }
+                    // 3. Model Ascending (if applicable)
+                    const modA = a.model || '';
+                    const modB = b.model || '';
+                    return modA.localeCompare(modB);
+                });
+            };
+
+            const apiStatsSorted = sortStats(stats.filter(s => s.key_type === 'api_key'), 'raw_key');
+            const oauthStatsSorted = sortStats(stats.filter(s => s.key_type === 'oauth'), 'raw_key');
+
+            apiStatsSorted.forEach(s => { apiKeyStatsBody.innerHTML += createRow(s); });
+            oauthStatsSorted.forEach(s => { oauthStatsBody.innerHTML += createRow(s); });
+
+            if (apiStatsSorted.length === 0) apiKeyStatsBody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 20px;">No API Key statistics found.</td></tr>';
+            if (oauthStatsSorted.length === 0) oauthStatsBody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 20px;">No OAuth statistics found.</td></tr>';
+
+            document.getElementById('apiKeyCount').textContent = apiStatsSorted.length;
+            document.getElementById('oauthCount').textContent = oauthStatsSorted.length;
+
+            // Helper to render aggregate tables
+            const renderAggTable = (aggData, targetBody, countElId, emptyMsg, extraCols = []) => {
+                const list = sortStats(Object.values(aggData));
+                const countEl = document.getElementById(countElId);
+                if (countEl) countEl.textContent = list.length;
+
+                const colSpan = 4 + extraCols.length;
+                if (list.length === 0) {
+                    targetBody.innerHTML = `<tr><td colspan="${colSpan}" style="text-align: center; padding: 20px;">${emptyMsg}</td></tr>`;
+                    return;
+                }
+                list.forEach((data) => {
+                    const rate = data.requests > 0 ? ((data.success / data.requests) * 100).toFixed(1) + '%' : '0%';
+                    
+                    let cells = '';
+                    // First column is always displayName (User token or Model name)
+                    cells += `<td style="padding: 8px; border: 1px solid var(--border-color); font-family: monospace; word-break: break-all; font-size: 0.9rem;">${(data.displayName || '').replace(/^models\//, '')}</td>`;
+                    
+                    // Middle dynamic columns
+                    extraCols.forEach(col => {
+                        const rawVal = (data[col] || '');
+                        const displayVal = rawVal.replace(/^models\//, '');
+                        
+                        if (col === 'mode') {
+                            cells += `<td style="padding: 8px; border: 1px solid var(--border-color); text-align: center;"><span style="padding: 2px 6px; border-radius: 4px; background: #ebf8ff; font-size: 0.8rem;">${displayVal}</span></td>`;
+                        } else if (col === 'usage_date') {
+                            cells += `<td style="padding: 8px; border: 1px solid var(--border-color); white-space: nowrap;">${displayVal}</td>`;
+                        } else {
+                            cells += `<td style="padding: 8px; border: 1px solid var(--border-color); text-align: left; font-size: 0.9rem;">${displayVal}</td>`;
+                        }
+                    });
+
+                    // Final metrics columns
+                    cells += `<td style="padding: 8px; border: 1px solid var(--border-color); text-align: center;">${data.requests}</td>`;
+                    cells += `<td style="padding: 8px; border: 1px solid var(--border-color); text-align: center;">${rate}</td>`;
+                    cells += `<td style="padding: 8px; border: 1px solid var(--border-color); text-align: center; color: ${data.errors429 > 0 ? 'var(--danger-color)' : 'inherit'}">${data.errors429}</td>`;
+
+                    targetBody.innerHTML += `<tr>${cells}</tr>`;
+                });
+            };
+
+            // --- By User (Aggregate Split) ---
+            const userApiAgg = {};
+            const userOauthAgg = {};
+            
+            stats.forEach(s => {
+                const user = s.user_access_token;
+                const mode = s.mode || 'unknown';
+                const model = s.model || 'unknown';
+                const date = s.usage_date;
+                const compositeKey = `${user}|${mode}|${model}|${date}`;
+                
+                const agg = s.key_type === 'oauth' ? userOauthAgg : userApiAgg;
+                if (!agg[compositeKey]) {
+                    agg[compositeKey] = { 
+                        requests: 0, success: 0, errors429: 0,
+                        displayName: user, mode: mode, model: model, usage_date: date
+                    };
+                }
+                agg[compositeKey].requests += s.request_count;
+                agg[compositeKey].success += s.success_count;
+                agg[compositeKey].errors429 += s.error_429_count;
+            });
+
+            renderAggTable(userApiAgg, userApiStatsBody, 'userApiKeyCount', 'No user API Key usage found.', ['usage_date', 'mode', 'model']);
+            renderAggTable(userOauthAgg, userOauthStatsBody, 'userOauthCount', 'No user OAuth usage found.', ['usage_date', 'mode', 'model']);
+
+            // --- By Model (Aggregate Split) ---
+            const modelApiAgg = {};
+            const modelOauthAgg = {};
+
+            stats.forEach(s => {
+                const model = s.model || 'Unknown';
+                const mode = s.mode || 'unknown';
+                const date = s.usage_date;
+                const compositeKey = `${model}|${mode}|${date}`;
+
+                const agg = s.key_type === 'oauth' ? modelOauthAgg : modelApiAgg;
+                if (!agg[compositeKey]) {
+                    agg[compositeKey] = { 
+                        requests: 0, success: 0, errors429: 0,
+                        displayName: model, mode: mode, usage_date: date
+                    };
+                }
+                agg[compositeKey].requests += s.request_count;
+                agg[compositeKey].success += s.success_count;
+                agg[compositeKey].errors429 += s.error_429_count;
+            });
+
+            renderAggTable(modelApiAgg, modelApiStatsBody, 'modelApiKeyCount', 'No API Key usage found by model.', ['usage_date', 'mode']);
+            renderAggTable(modelOauthAgg, modelOauthStatsBody, 'modelOauthCount', 'No OAuth usage found by model.', ['usage_date', 'mode']);
+        }
+
+        async function clearStatistics() {
+            if (!confirm('Are you sure you want to clear ALL usage statistics?')) return;
+            try {
+                const response = await fetch('/api/statistics', { method: 'DELETE' });
+                if (!response.ok) throw new Error('Failed to clear statistics');
+                alert('Statistics cleared successfully');
+                loadStatistics();
+            } catch (error) {
+                alert('Error clearing statistics: ' + error.message);
             }
         }
         // Tab Switching

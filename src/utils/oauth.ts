@@ -1,6 +1,11 @@
 import type { OAuthCredentials, GoogleTokenResponse } from '../types';
+import { SystemContext } from './context';
+import { sendInvalidTokenEmail } from './email';
 
-export async function refreshOAuthToken(credentials: OAuthCredentials): Promise<GoogleTokenResponse> {
+export async function refreshOAuthToken(
+	credentials: OAuthCredentials,
+	ctx?: SystemContext
+): Promise<GoogleTokenResponse> {
 	const tokenUrl = 'https://oauth2.googleapis.com/token';
 	
 	if (!credentials.client_id || !credentials.client_secret || !credentials.refresh_token) {
@@ -23,14 +28,32 @@ export async function refreshOAuthToken(credentials: OAuthCredentials): Promise<
 
 	if (!response.ok) {
 		const errorData = await response.text();
-		throw new Error(`OAuth token refresh failed: ${response.status} ${errorData}`);
+		const errorMessage = `OAuth token refresh failed: ${response.status} ${errorData}`;
+
+		if (ctx) {
+			const resendKey = ctx.resendApiKey;
+			const toEmail = ctx.notificationEmail;
+			const rawCredentialString = `${credentials.client_id}:${credentials.client_secret}:${credentials.refresh_token}${credentials.project_id ? ':' + credentials.project_id : ''}`;
+
+			if (resendKey && toEmail) {
+				ctx.waitUntil(
+					sendInvalidTokenEmail(resendKey, toEmail, 'oauth', rawCredentialString, errorMessage)
+				);
+			}
+		}
+
+		throw new Error(errorMessage);
 	}
 
 	const tokenData: GoogleTokenResponse = await response.json();
 	return tokenData;
 }
 
-export async function getOAuthAccessToken(state: DurableObjectState, credentials: OAuthCredentials): Promise<string> {
+export async function getOAuthAccessToken(
+	state: DurableObjectState,
+	credentials: OAuthCredentials,
+	ctx?: SystemContext
+): Promise<string> {
 	const cacheKey = `oauth_${credentials.client_id}_${credentials.refresh_token.substring(0, 10)}`;
 	let cached = await state.storage.get(cacheKey) as { token: string; expires: number } | null;
 
@@ -39,7 +62,7 @@ export async function getOAuthAccessToken(state: DurableObjectState, credentials
 		return cached.token;
 	}
 
-	const tokenData = await refreshOAuthToken(credentials);
+	const tokenData = await refreshOAuthToken(credentials, ctx);
 	const expiresAt = now + (tokenData.expires_in * 1000);
 
 	await state.storage.put(cacheKey, {
