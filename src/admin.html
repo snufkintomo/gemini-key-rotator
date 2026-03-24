@@ -7,6 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         :root {
             --background-start: #f7f8fa;
@@ -143,6 +144,11 @@
             display: flex;
             margin-bottom: 2rem;
             border-bottom: 2px solid var(--border-color);
+            overflow-x: auto;
+            scrollbar-width: none; /* Firefox */
+        }
+        .tab-buttons::-webkit-scrollbar {
+            display: none; /* Safari and Chrome */
         }
         .tab-button {
             padding: 12px 24px;
@@ -292,6 +298,7 @@
             <button class="tab-button" data-tab="oauth-tab">OAuth Credentials</button>
             <button class="tab-button" data-tab="logs-tab">API Logs</button>
             <button class="tab-button" data-tab="stats-tab">Statistics</button>
+            <button class="tab-button" data-tab="trends-tab">Trends</button>
         </div>
 
         <!-- API Keys Tab -->
@@ -541,6 +548,20 @@
             </div>
         </div>
 
+        <!-- Trends Tab -->
+        <div id="trends-tab" class="tab-content">
+            <h2>Usage Trends</h2>
+            <p>Visual representation of request volume and success rates over the last 30 days.</p>
+            
+            <div style="background: white; padding: 1.5rem; border-radius: 8px; border: 1px solid var(--border-color); margin-bottom: 2rem;">
+                <canvas id="requestsChart" height="200"></canvas>
+            </div>
+
+            <div style="background: white; padding: 1.5rem; border-radius: 8px; border: 1px solid var(--border-color);">
+                <canvas id="errorsChart" height="200"></canvas>
+            </div>
+        </div>
+
         <!-- Logs Tab -->
         <div id="logs-tab" class="tab-content">
             <h2>API Logs</h2>
@@ -766,6 +787,89 @@
 
         loadStatsBtn.addEventListener('click', loadStatistics);
         clearStatsBtn.addEventListener('click', clearStatistics);
+
+        // Trends Handling
+        let requestsChart = null;
+        let errorsChart = null;
+
+        async function loadTrends() {
+            try {
+                const response = await fetch('/api/statistics/trends');
+                if (!response.ok) throw new Error('Failed to load trends');
+                const data = await response.json();
+                renderTrends(data);
+            } catch (error) {
+                console.error('Error loading trends:', error);
+            }
+        }
+
+        function renderTrends(data) {
+            const labels = data.map(d => d.usage_date);
+            const totalRequests = data.map(d => d.total_requests);
+            const totalSuccess = data.map(d => d.total_success);
+            const total429 = data.map(d => d.total_429);
+
+            if (requestsChart) requestsChart.destroy();
+            if (errorsChart) errorsChart.destroy();
+
+            const ctxReq = document.getElementById('requestsChart').getContext('2d');
+            requestsChart = new Chart(ctxReq, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: 'Total Requests',
+                            data: totalRequests,
+                            borderColor: '#4299e1',
+                            backgroundColor: 'rgba(66, 153, 225, 0.1)',
+                            fill: true,
+                            tension: 0.3
+                        },
+                        {
+                            label: 'Successful Requests',
+                            data: totalSuccess,
+                            borderColor: '#48bb78',
+                            backgroundColor: 'transparent',
+                            tension: 0.3
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        title: { display: true, text: 'Request Volume (30 Days)' }
+                    },
+                    scales: {
+                        y: { beginAtZero: true }
+                    }
+                }
+            });
+
+            const ctxErr = document.getElementById('errorsChart').getContext('2d');
+            errorsChart = new Chart(ctxErr, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: '429 Errors',
+                            data: total429,
+                            backgroundColor: '#f56565'
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        title: { display: true, text: 'Rate Limit Errors (429)' }
+                    },
+                    scales: {
+                        y: { beginAtZero: true }
+                    }
+                }
+            });
+        }
 
         // Dimension switching logic
         document.querySelectorAll('.dimension-btn').forEach(btn => {
@@ -1095,6 +1199,13 @@
                 // Show the selected tab and activate button
                 document.getElementById(targetTab).classList.add('active');
                 button.classList.add('active');
+
+                // Load tab-specific data
+                if (targetTab === 'trends-tab') {
+                    loadTrends();
+                } else if (targetTab === 'stats-tab') {
+                    loadStatistics();
+                }
             });
         });
 

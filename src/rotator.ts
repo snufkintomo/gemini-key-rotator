@@ -228,6 +228,7 @@ export class KeyRotator {
 		let apiKey = '';
 		let keyIndexToUse: number | null = null;
 		let oauthIndexToUse: number | null = null;
+		let effectivelyOAuth = isOAuthMode;
 
 		if (isOAuthMode) {
 			oauthIndexToUse = getStandardRotationIndex(
@@ -250,14 +251,6 @@ export class KeyRotator {
 			}
 			apiKey = oauthCredentialsList[oauthIndexToUse];
 		} else {
-			if (apiKeys.length === 0) {
-				return createErrorResponse(
-					'Internal configuration error: No API keys available for this user.',
-					503,
-					protocol
-				);
-			}
-
 			keyIndexToUse = getStandardRotationIndex(
 				apiKeys,
 				currentKeyIndex,
@@ -267,13 +260,31 @@ export class KeyRotator {
 			);
 
 			if (keyIndexToUse === null) {
-				return createErrorResponse(
-					'All API keys for your account are currently exhausted. Please try again later.',
-					429,
-					protocol
-				);
+				// Fallback to OAuth if standard API keys are exhausted
+				if (oauthCredentialsList.length > 0) {
+					oauthIndexToUse = getStandardRotationIndex(
+						oauthCredentialsList,
+						currentOauthIndex,
+						oauthKeyStates,
+						modelForExhaustion,
+						Date.now()
+					);
+					if (oauthIndexToUse !== null) {
+						apiKey = oauthCredentialsList[oauthIndexToUse];
+						effectivelyOAuth = true;
+					}
+				}
+
+				if (!apiKey) {
+					return createErrorResponse(
+						'All API keys (and fallback OAuth credentials) for your account are currently exhausted. Please try again later.',
+						429,
+						protocol
+					);
+				}
+			} else {
+				apiKey = apiKeys[keyIndexToUse];
 			}
-			apiKey = apiKeys[keyIndexToUse];
 		}
 
 		const doProxy = async (apiKeyToUse: string, requestToProxy: Request) => {
@@ -343,41 +354,59 @@ export class KeyRotator {
 			this.ctx.waitUntil(
 				this.recordUsage(
 					apiKey,
-					isOAuthMode ? 'oauth' : 'api_key',
+					effectivelyOAuth ? "oauth" : "api_key",
 					userAccessToken,
 					response.ok,
 					response.status === 429,
-					authMode || 'google',
-					model || 'unknown'
+					authMode || "google",
+					model || "unknown"
 				)
 			);
 		}
 
 		let attemptCount = 1;
-		let activeKeys = isOAuthMode ? oauthCredentialsList : apiKeys;
-		let activeStates = isOAuthMode ? oauthKeyStates : keyStates;
-		let activeIndex = isOAuthMode ? oauthIndexToUse! : keyIndexToUse!;
+		let activeKeys = effectivelyOAuth ? oauthCredentialsList : apiKeys;
+		let activeStates = effectivelyOAuth ? oauthKeyStates : keyStates;
+		let activeIndex = effectivelyOAuth ? oauthIndexToUse! : keyIndexToUse!;
 
 		let maxAttempts = Math.min(activeKeys.length, 3);
-		while ([401, 403, 429, 500, 502, 503, 524].includes(response.status) && attemptCount < maxAttempts) {
+		while (
+			[401, 403, 429, 500, 502, 503, 524].includes(response.status) &&
+			attemptCount < maxAttempts
+		) {
 			if (response.status === 401 || response.status === 403) {
-				activeStates[activeIndex] = { ...activeStates[activeIndex], invalid: true };
+				activeStates[activeIndex] = {
+					...activeStates[activeIndex],
+					invalid: true,
+				};
 				this.ctx.waitUntil(
 					this.notifyInvalidToken(
-						isOAuthMode ? 'oauth' : 'api_key',
+						effectivelyOAuth ? "oauth" : "api_key",
 						apiKey,
 						`API returned ${response.status}`
 					)
 				);
 			} else if (response.status === 429) {
-				const cooldown = 60 * 1000;
 				const currentState = activeStates[activeIndex] || {};
 				const currentExhausted = currentState.exhaustedUntil || {};
+				const lastExhaustedUntil = currentExhausted[modelForExhaustion] || 0;
+				const now = Date.now();
+
+				// Exponential backoff: Start with 1 minute, double it each time if hit again before previous cooldown was fully cleared
+				let cooldown = 60 * 1000;
+				if (lastExhaustedUntil > now - 300 * 1000) {
+					const prevCooldown = lastExhaustedUntil - (now - cooldown);
+					cooldown = Math.min(
+						Math.max(prevCooldown * 2, cooldown * 2),
+						1800 * 1000
+					); // Max half hour
+				}
+
 				activeStates[activeIndex] = {
 					...currentState,
 					exhaustedUntil: {
 						...currentExhausted,
-						[modelForExhaustion]: Date.now() + cooldown,
+						[modelForExhaustion]: now + cooldown,
 					},
 				};
 			}
@@ -399,7 +428,7 @@ export class KeyRotator {
 
 			if (nextIndex === null || nextIndex === activeIndex) break;
 			activeIndex = nextIndex;
-			if (isOAuthMode) oauthIndexToUse = nextIndex;
+			if (effectivelyOAuth) oauthIndexToUse = nextIndex;
 			else keyIndexToUse = nextIndex;
 			apiKey = activeKeys[activeIndex];
 			attemptCount++;
@@ -410,33 +439,35 @@ export class KeyRotator {
 				this.ctx.waitUntil(
 					this.recordUsage(
 						apiKey,
-						isOAuthMode ? 'oauth' : 'api_key',
+						effectivelyOAuth ? "oauth" : "api_key",
 						userAccessToken,
 						response.ok,
 						response.status === 429,
-						authMode || 'google',
-						model || 'unknown'
+						authMode || "google",
+						model || "unknown"
 					)
 				);
 			}
 		}
 
 		let updatePromise;
-		if (isOAuthMode) {
+		if (effectivelyOAuth) {
 			const nextOauthIndexForDb =
 				oauthIndexToUse !== null
 					? (oauthIndexToUse + 1) % oauthCredentialsList.length
 					: currentOauthIndex;
 			updatePromise = this.ctx.env.DB.prepare(
-				'UPDATE api_credentials SET current_oauth_index = ?, oauth_key_states = ? WHERE access_token = ?'
+				"UPDATE api_credentials SET current_oauth_index = ?, oauth_key_states = ? WHERE access_token = ?"
 			)
 				.bind(nextOauthIndexForDb, JSON.stringify(oauthKeyStates), userAccessToken)
 				.run();
 		} else {
 			const nextKeyIndexForDb =
-				keyIndexToUse !== null ? (keyIndexToUse + 1) % apiKeys.length : currentKeyIndex;
+				keyIndexToUse !== null
+					? (keyIndexToUse + 1) % apiKeys.length
+					: currentKeyIndex;
 			updatePromise = this.ctx.env.DB.prepare(
-				'UPDATE api_credentials SET current_key_index = ?, key_states = ? WHERE access_token = ?'
+				"UPDATE api_credentials SET current_key_index = ?, key_states = ? WHERE access_token = ?"
 			)
 				.bind(nextKeyIndexForDb, JSON.stringify(keyStates), userAccessToken)
 				.run();

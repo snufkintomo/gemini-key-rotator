@@ -1,5 +1,7 @@
 # Gemini Key Rotator
 
+[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/snufkintomo/gemini-key-rotator)
+
 ## Overview
 
 The Gemini Key Rotator is a powerful, self-hosted Cloudflare Worker designed to provide resilient and scalable access to Google's Gemini API. It acts as a reverse proxy, intelligently rotating through a pool of Gemini API keys and Google OAuth 2.0 credentials to mitigate rate-limiting issues and ensure high availability.

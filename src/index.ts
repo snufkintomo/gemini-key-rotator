@@ -596,6 +596,33 @@ export default {
           }
         }
 
+        // Handle Statistics Trends API
+        if (requestUrl.pathname === '/api/statistics/trends') {
+          const corsHeaders = getCorsHeaders(request);
+          const headers = new Headers(corsHeaders);
+          if (request.method === 'GET') {
+            try {
+              // Group usage by date to provide trend data
+              const stmt = env.DB.prepare(`
+                SELECT 
+                  usage_date, 
+                  SUM(request_count) as total_requests, 
+                  SUM(success_count) as total_success, 
+                  SUM(error_429_count) as total_429
+                FROM api_key_usage 
+                GROUP BY usage_date 
+                ORDER BY usage_date ASC
+                LIMIT 30
+              `);
+              const result = await stmt.all();
+              return jsonResponse(result.results, 200, headers);
+            } catch (e: any) {
+              console.error("Error fetching trend statistics:", e);
+              return jsonResponse({ error: 'Failed to fetch trend statistics.' }, 500, headers);
+            }
+          }
+        }
+
         // Handle Statistics API
         if (requestUrl.pathname === '/api/statistics') {
           const corsHeaders = getCorsHeaders(request);
