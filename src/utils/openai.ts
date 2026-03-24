@@ -270,48 +270,99 @@ export function processCompletionsResponse(data: any, model: string, id: string)
 }
 
 export function toOpenAIStream(this: any, line: any, controller: any) {
-	const reasonsMap: Record<string, string> = { STOP: 'stop', MAX_TOKENS: 'length', SAFETY: 'content_filter', RECITATION: 'content_filter' };
+	const reasonsMap: Record<string, string> = { 
+		STOP: 'stop', 
+		MAX_TOKENS: 'length', 
+		SAFETY: 'content_filter', 
+		RECITATION: 'content_filter',
+		OTHER: 'stop'
+	};
 	const { candidates, usageMetadata } = line;
-	if (usageMetadata) this.shared.usage = { completion_tokens: usageMetadata.candidatesTokenCount, prompt_tokens: usageMetadata.promptTokenCount, total_tokens: usageMetadata.totalTokenCount };
+	
+	if (usageMetadata) {
+		this.shared.usage = { 
+			completion_tokens: (usageMetadata.candidatesTokenCount || 0) + (usageMetadata.thoughtsTokenCount || 0), 
+			prompt_tokens: usageMetadata.promptTokenCount, 
+			total_tokens: usageMetadata.totalTokenCount 
+		};
+	}
+
 	if (candidates) {
 		for (const cand of candidates) {
 			const { index, content, finishReason } = cand;
-			const { parts } = content;
-			let allContent = '';
-			let accumulatedReasoning = '';
+			const parts = content?.parts || [];
+			let currentFullText = '';
+			let currentFullReasoning = '';
+			let toolCalls: any[] = [];
+
 			for (const part of parts) {
-				if (part.text) {
-					if (
-						(part as any).thought === true ||
-						((part as any).thought && typeof (part as any).thought === 'string')
-					) {
-						const thoughtContent =
-							(part as any).thought === true ? part.text : (part as any).thought;
-						accumulatedReasoning += thoughtContent || part.text;
-					} else {
-						allContent += part.text;
-					}
+				// Handle thinking/reasoning parts
+				let thinkingChunk = '';
+				if ((part as any).thought === true || ((part as any).thought && typeof (part as any).thought === 'string')) {
+					thinkingChunk = (part as any).thought === true ? (part.text || '') : (part as any).thought;
+				} else if ((part as any).thinking && typeof (part as any).thinking === 'string') {
+					thinkingChunk = (part as any).thinking;
+				} else if ((part as any).reasoning && typeof (part as any).reasoning === 'string') {
+					thinkingChunk = (part as any).reasoning;
 				}
 
-				// Capture all variations of thinking/reasoning parts in stream
-				if ((part as any).thought && typeof (part as any).thought === 'string') {
-					accumulatedReasoning += (part as any).thought;
-				} else if ((part as any).thinking && typeof (part as any).thinking === 'string') {
-					accumulatedReasoning += (part as any).thinking;
-				} else if ((part as any).reasoning && typeof (part as any).reasoning === 'string') {
-					accumulatedReasoning += (part as any).reasoning;
-				} else if ((part as any).toolCode && typeof (part as any).toolCode === 'string') {
-					accumulatedReasoning += (part as any).toolCode;
+				if (thinkingChunk) {
+					currentFullReasoning += thinkingChunk;
+				} else if (part.text) {
+					currentFullText += part.text;
+				} else if (part.functionCall) {
+					toolCalls.push({
+						index: toolCalls.length,
+						id: `call_${generateId()}`,
+						type: 'function',
+						function: {
+							name: part.functionCall.name,
+							arguments: JSON.stringify(part.functionCall.args || {}),
+						},
+					});
 				}
 			}
-			if (this.last[index] === undefined) this.last[index] = '';
-			const lastText = this.last[index] || '';
-			let delta = allContent.startsWith(lastText) ? allContent.substring(lastText.length) : allContent;
-			this.last[index] = allContent;
-			const deltaObj: any = { content: delta };
-			if (accumulatedReasoning) deltaObj.reasoning_content = accumulatedReasoning;
-			const obj = { id: this.id, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: this.model, choices: [{ index, delta: deltaObj, finish_reason: reasonsMap[finishReason] || finishReason }] };
-			controller.enqueue(`data: ${JSON.stringify(obj)}\n\n`);
+
+			// Initialize state for this candidate index if needed
+			if (!this.shared.lastText) this.shared.lastText = {};
+			if (!this.shared.lastReasoning) this.shared.lastReasoning = {};
+			
+			const lastText = this.shared.lastText[index] || '';
+			const lastReasoning = this.shared.lastReasoning[index] || '';
+
+			// Calculate deltas
+			const textDelta = currentFullText.startsWith(lastText) 
+				? currentFullText.substring(lastText.length) 
+				: currentFullText;
+			
+			const reasoningDelta = currentFullReasoning.startsWith(lastReasoning)
+				? currentFullReasoning.substring(lastReasoning.length)
+				: currentFullReasoning;
+
+			// Update state
+			this.shared.lastText[index] = currentFullText;
+			this.shared.lastReasoning[index] = currentFullReasoning;
+
+			// Only send a chunk if there's new content or a finish reason
+			if (textDelta || reasoningDelta || toolCalls.length > 0 || finishReason) {
+				const deltaObj: any = {};
+				if (textDelta) deltaObj.content = textDelta;
+				if (reasoningDelta) deltaObj.reasoning_content = reasoningDelta;
+				if (toolCalls.length > 0) deltaObj.tool_calls = toolCalls;
+
+				const obj = { 
+					id: this.id, 
+					object: 'chat.completion.chunk', 
+					created: Math.floor(Date.now() / 1000), 
+					model: this.model, 
+					choices: [{ 
+						index, 
+						delta: deltaObj, 
+						finish_reason: finishReason ? (reasonsMap[finishReason] || finishReason.toLowerCase()) : null 
+					}] 
+				};
+				controller.enqueue(`data: ${JSON.stringify(obj)}\n\n`);
+			}
 		}
 	}
 }

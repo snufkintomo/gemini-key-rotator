@@ -243,123 +243,127 @@ export function transformGeminiToClaudeStreamStart(this: any, controller: any) {
 }
 
 export function transformGeminiToClaudeStream(this: any, geminiChunk: any, controller: any) {
-	const reasonsMap: Record<string, string> = { STOP: 'end_turn', MAX_TOKENS: 'max_tokens', SAFETY: 'stop_sequence', RECITATION: 'stop_sequence', OTHER: 'end_turn' };
+	const reasonsMap: Record<string, string> = { 
+		STOP: 'end_turn', 
+		MAX_TOKENS: 'max_tokens', 
+		SAFETY: 'stop_sequence', 
+		RECITATION: 'stop_sequence', 
+		OTHER: 'end_turn' 
+	};
 	const { candidates, usageMetadata } = geminiChunk;
+	
+	if (usageMetadata) {
+		this.shared.usage = { 
+			output_tokens: (usageMetadata.candidatesTokenCount || 0) + (usageMetadata.thoughtsTokenCount || 0) 
+		};
+	}
+
 	if (candidates && candidates.length > 0) {
 		const candidate = candidates[0];
 		const { content, finishReason } = candidate;
+		
 		if (content?.parts) {
 			for (const part of content.parts) {
+				// 1. Detect Thinking
 				let thinkingContent = '';
-				if (
-					(part as any).thought === true ||
-					((part as any).thought && typeof (part as any).thought === 'string')
-				) {
-					const thoughtContent = (part as any).thought === true ? part.text : (part as any).thought;
-					thinkingContent = thoughtContent || part.text || '';
+				if ((part as any).thought === true || ((part as any).thought && typeof (part as any).thought === 'string')) {
+					thinkingContent = (part as any).thought === true ? (part.text || '') : (part as any).thought;
 				} else if ((part as any).thinking && typeof (part as any).thinking === 'string') {
 					thinkingContent = (part as any).thinking;
 				} else if ((part as any).reasoning && typeof (part as any).reasoning === 'string') {
 					thinkingContent = (part as any).reasoning;
-				} else if ((part as any).toolCode && typeof (part as any).toolCode === 'string') {
-					thinkingContent = (part as any).toolCode;
 				}
 
 				if (thinkingContent) {
-					if (!this.shared.sentThinkingBlock) {
-						controller.enqueue(
-							`event: content_block_start\ndata: ${JSON.stringify({
-								type: 'content_block_start',
-								index: this.shared.contentIndex || 0,
-								content_block: { type: 'thinking', thinking: '' },
-							})}\n\n`
-						);
-						this.shared.sentThinkingBlock = true;
+					// Start thinking block if not already started
+					if (!this.shared.currentBlockType) {
+						controller.enqueue(`event: content_block_start\ndata: ${JSON.stringify({
+							type: 'content_block_start',
+							index: this.shared.contentIndex || 0,
+							content_block: { type: 'thinking', thinking: '' }
+						})}\n\n`);
+						this.shared.currentBlockType = 'thinking';
+						this.shared.contentIndex = (this.shared.contentIndex || 0);
 					}
-					controller.enqueue(
-						`event: content_block_delta\ndata: ${JSON.stringify({
+					
+					// If we were in a text block, we can't switch back to thinking in Claude protocol usually,
+					// but Gemini might interleaved. We'll stick to the current block if it's thinking.
+					if (this.shared.currentBlockType === 'thinking') {
+						controller.enqueue(`event: content_block_delta\ndata: ${JSON.stringify({
 							type: 'content_block_delta',
 							index: this.shared.contentIndex || 0,
-							delta: { type: 'thinking_delta', thinking: thinkingContent },
-						})}\n\n`
-					);
-					this.shared.thinking = (this.shared.thinking || '') + thinkingContent;
+							delta: { type: 'thinking_delta', thinking: thinkingContent }
+						})}\n\n`);
+					}
 					continue;
 				}
 
+				// 2. Handle Text
 				if (part.text) {
-					if (this.shared.sentThinkingBlock && !this.shared.stoppedThinkingBlock) {
-						controller.enqueue(
-							`event: content_block_stop\ndata: ${JSON.stringify({
-								type: 'content_block_stop',
-								index: this.shared.contentIndex || 0,
-							})}\n\n`
-						);
+					// Transition from thinking to text if needed
+					if (this.shared.currentBlockType === 'thinking') {
+						controller.enqueue(`event: content_block_stop\ndata: ${JSON.stringify({
+							type: 'content_block_stop',
+							index: this.shared.contentIndex || 0
+						})}\n\n`);
 						this.shared.contentIndex = (this.shared.contentIndex || 0) + 1;
-						this.shared.stoppedThinkingBlock = true;
+						this.shared.currentBlockType = null;
 					}
-					if (!this.shared.sentTextBlock) {
-						controller.enqueue(
-							`event: content_block_start\ndata: ${JSON.stringify({
-								type: 'content_block_start',
-								index: this.shared.contentIndex || 0,
-								content_block: { type: 'text', text: '' },
-							})}\n\n`
-						);
-						this.shared.sentTextBlock = true;
+
+					// Start text block if not started
+					if (!this.shared.currentBlockType) {
+						controller.enqueue(`event: content_block_start\ndata: ${JSON.stringify({
+							type: 'content_block_start',
+							index: this.shared.contentIndex || 0,
+							content_block: { type: 'text', text: '' }
+						})}\n\n`);
+						this.shared.currentBlockType = 'text';
 					}
-					controller.enqueue(
-						`event: content_block_delta\ndata: ${JSON.stringify({
+
+					if (this.shared.currentBlockType === 'text') {
+						controller.enqueue(`event: content_block_delta\ndata: ${JSON.stringify({
 							type: 'content_block_delta',
 							index: this.shared.contentIndex || 0,
-							delta: { type: 'text_delta', text: part.text },
-						})}\n\n`
-					);
-				} else if (part.functionCall) {
-					if (this.shared.sentThinkingBlock && !this.shared.stoppedThinkingBlock) {
-						controller.enqueue(
-							`event: content_block_stop\ndata: ${JSON.stringify({
-								type: 'content_block_stop',
-								index: this.shared.contentIndex || 0,
-							})}\n\n`
-						);
-						this.shared.contentIndex = (this.shared.contentIndex || 0) + 1;
-						this.shared.stoppedThinkingBlock = true;
+							delta: { type: 'text_delta', text: part.text }
+						})}\n\n`);
 					}
-					if (this.shared.sentTextBlock && !this.shared.stoppedTextBlock) {
-						controller.enqueue(
-							`event: content_block_stop\ndata: ${JSON.stringify({
-								type: 'content_block_stop',
-								index: this.shared.contentIndex || 0,
-							})}\n\n`
-						);
-						this.shared.contentIndex = (this.shared.contentIndex || 0) + 1;
-						this.shared.stoppedTextBlock = true;
-					}
-					const toolIndex = this.shared.contentIndex || 0;
-					controller.enqueue(
-						`event: content_block_start\ndata: ${JSON.stringify({
-							type: 'content_block_start',
-							index: toolIndex,
-							content_block: {
-								type: 'tool_use',
-								id: `toolu_${generateId()}`,
-								name: part.functionCall.name,
-								input: part.functionCall.args,
-							},
-						})}\n\n`
-					);
-					controller.enqueue(
-						`event: content_block_stop\ndata: ${JSON.stringify({
+				} 
+				
+				// 3. Handle Tool Calls
+				else if (part.functionCall) {
+					// Stop any open text/thinking blocks
+					if (this.shared.currentBlockType) {
+						controller.enqueue(`event: content_block_stop\ndata: ${JSON.stringify({
 							type: 'content_block_stop',
-							index: toolIndex,
-						})}\n\n`
-					);
-					this.shared.contentIndex = (this.shared.contentIndex || 0) + 1;
+							index: this.shared.contentIndex || 0
+						})}\n\n`);
+						this.shared.contentIndex = (this.shared.contentIndex || 0) + 1;
+						this.shared.currentBlockType = null;
+					}
+
+					const toolIndex = this.shared.contentIndex || 0;
+					controller.enqueue(`event: content_block_start\ndata: ${JSON.stringify({
+						type: 'content_block_start',
+						index: toolIndex,
+						content_block: {
+							type: 'tool_use',
+							id: `toolu_${generateId()}`,
+							name: part.functionCall.name,
+							input: part.functionCall.args || {}
+						}
+					})}\n\n`);
+					
+					controller.enqueue(`event: content_block_stop\ndata: ${JSON.stringify({
+						type: 'content_block_stop',
+						index: toolIndex
+					})}\n\n`);
+					
+					this.shared.contentIndex = toolIndex + 1;
 					this.shared.stopReason = 'tool_use';
 				}
 			}
 		}
+
 		if (finishReason) {
 			const mappedReason = reasonsMap[finishReason] || finishReason.toLowerCase();
 			if (this.shared.stopReason !== 'tool_use' || mappedReason !== 'end_turn') {
@@ -367,16 +371,28 @@ export function transformGeminiToClaudeStream(this: any, geminiChunk: any, contr
 			}
 		}
 	}
-	if (usageMetadata) this.shared.usage = { output_tokens: usageMetadata.candidatesTokenCount || 0 };
 }
 
 export function transformGeminiToClaudeStreamFlush(this: any, controller: any) {
-	if (this.shared.sentThinkingBlock && !this.shared.stoppedThinkingBlock) {
-		controller.enqueue(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: this.shared.contentIndex || 0 })}\n\n`);
-	} else if (this.shared.sentTextBlock && !this.shared.stoppedTextBlock) {
-		controller.enqueue(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: this.shared.contentIndex || 0 })}\n\n`);
+	// 1. Close any remaining open content block
+	if (this.shared.currentBlockType) {
+		controller.enqueue(`event: content_block_stop\ndata: ${JSON.stringify({ 
+			type: 'content_block_stop', 
+			index: this.shared.contentIndex || 0 
+		})}\n\n`);
 	}
-	controller.enqueue(`event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: this.shared.stopReason || 'end_turn' }, usage: this.shared.usage || { output_tokens: 0 } })}\n\n`);
+
+	// 2. Send final message delta with stop reason and usage
+	controller.enqueue(`event: message_delta\ndata: ${JSON.stringify({ 
+		type: 'message_delta', 
+		delta: { 
+			stop_reason: this.shared.stopReason || 'end_turn',
+			stop_sequence: null
+		}, 
+		usage: this.shared.usage || { output_tokens: 0 } 
+	})}\n\n`);
+
+	// 3. Final stop event
 	controller.enqueue(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
 }
 
