@@ -1107,9 +1107,29 @@
         const accessTokenInput = document.getElementById('accessToken');
         const apiKeysTextarea = document.getElementById('apiKeys');
 
+        async function resetKeyHealth(token, key, isOAuth) {
+            if (!confirm(`Reset health status for this ${isOAuth ? 'OAuth credential' : 'API key'}?`)) return;
+            try {
+                const response = await fetch('/api/reset-key-health', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ access_token: token, key, isOAuth })
+                });
+                if (response.ok) {
+                    updateKeyHealth(token, isOAuth ? 'oauth' : 'api');
+                } else {
+                    const data = await response.json();
+                    alert('Error: ' + (data.error || 'Failed to reset health'));
+                }
+            } catch (e) {
+                alert('Error: ' + e.message);
+            }
+        }
+
         async function updateKeyHealth(token, type) {
-            const healthContainer = document.getElementById(type === 'api' ? 'api-key-health' : 'oauth-key-health');
-            const listContainer = document.getElementById(type === 'api' ? 'api-key-status-list' : 'oauth-key-status-list');
+            const isOAuth = type === 'oauth';
+            const healthContainer = document.getElementById(isOAuth ? 'oauth-key-health' : 'api-key-health');
+            const listContainer = document.getElementById(isOAuth ? 'oauth-key-status-list' : 'api-key-status-list');
             
             try {
                 const res = await fetch(`/api/key-status?access_token=${encodeURIComponent(token)}`);
@@ -1118,8 +1138,8 @@
                     return;
                 }
                 const data = await res.json();
-                const keys = type === 'api' ? data.api_keys : data.oauth_credentials;
-                const states = type === 'api' ? data.key_states : data.oauth_key_states;
+                const keys = isOAuth ? data.oauth_credentials : data.api_keys;
+                const states = isOAuth ? data.oauth_key_states : data.key_states;
 
                 if (!keys || keys.length === 0) {
                     healthContainer.style.display = 'none';
@@ -1147,13 +1167,31 @@
                         statusBadge = '<span class="key-status-badge badge-exhausted">Exhausted</span>';
                     }
 
-                    item.innerHTML = `
-                        <div class="key-status-info">
-                            <span class="key-status-raw">${maskKey(key)}</span>
-                            ${exhaustedModels.length > 0 ? `<div class="exhausted-models">Exhausted: ${exhaustedModels.join(', ')}</div>` : ''}
-                        </div>
-                        ${statusBadge}
+                    const infoDiv = document.createElement('div');
+                    infoDiv.className = 'key-status-info';
+                    infoDiv.innerHTML = `
+                        <span class="key-status-raw">${maskKey(key)}</span>
+                        ${exhaustedModels.length > 0 ? `<div class="exhausted-models">Exhausted: ${exhaustedModels.join(', ')}</div>` : ''}
                     `;
+
+                    const actionsDiv = document.createElement('div');
+                    actionsDiv.style.display = 'flex';
+                    actionsDiv.style.alignItems = 'center';
+                    actionsDiv.style.gap = '0.5rem';
+                    actionsDiv.innerHTML = statusBadge;
+
+                    if (isInvalid || exhaustedModels.length > 0) {
+                        const resetBtn = document.createElement('button');
+                        resetBtn.textContent = 'Reset';
+                        resetBtn.className = 'dim-tab-btn';
+                        resetBtn.style.padding = '2px 8px';
+                        resetBtn.style.fontSize = '0.7rem';
+                        resetBtn.onclick = () => resetKeyHealth(token, key, isOAuth);
+                        actionsDiv.appendChild(resetBtn);
+                    }
+
+                    item.appendChild(infoDiv);
+                    item.appendChild(actionsDiv);
                     listContainer.appendChild(item);
                 });
                 healthContainer.style.display = 'block';
@@ -1370,9 +1408,14 @@
                             const data = await response.json();
                             if (data.hasOwnProperty('oauth_credentials')) {
                                 oauthCredentialsTextarea.value = data.oauth_credentials ? data.oauth_credentials.replace(/,/g, '\n') : '';
+                                updateKeyHealth(token, 'oauth');
                             }
+                        } else {
+                            document.getElementById('oauth-key-health').style.display = 'none';
                         }
                     } catch (error) { console.error('Error fetching OAuth:', error); }
+                } else {
+                    document.getElementById('oauth-key-health').style.display = 'none';
                 }
             }, 500);
         });

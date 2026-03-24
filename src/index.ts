@@ -562,6 +562,40 @@ export default {
           }
         }
 
+        if (requestUrl.pathname === '/api/reset-key-health') {
+          const corsHeaders = getCorsHeaders(request);
+          const headers = new Headers(corsHeaders);
+
+          if (request.method === 'POST') {
+            const body = await request.json<any>();
+            const accessToken = body.access_token || request.headers.get('X-Access-Token');
+
+            if (!accessToken) {
+              return jsonResponse({ error: 'Access token is required.' }, 400, headers);
+            }
+
+            const id = env.KEY_ROTATOR.idFromName(accessToken);
+            const stub = env.KEY_ROTATOR.get(id, { locationHint: 'wnam' });
+            
+            const forwardHeaders = new Headers(request.headers);
+            forwardHeaders.set('X-Access-Token', accessToken);
+            forwardHeaders.set('X-Auth-Mode', 'google');
+            forwardHeaders.set('Content-Type', 'application/json');
+
+            const forwardRequest = new Request(request.url, {
+              method: 'POST',
+              headers: forwardHeaders,
+              body: JSON.stringify(body)
+            });
+            
+            const internalUrl = new URL(request.url);
+            internalUrl.pathname = '/admin/reset-key-health';
+            
+            const response = await stub.fetch(new Request(internalUrl.toString(), forwardRequest));
+            return new Response(response.body, { status: response.status, headers: new Headers(corsHeaders) });
+          }
+        }
+
         // Handle Statistics API
         if (requestUrl.pathname === '/api/statistics') {
           const corsHeaders = getCorsHeaders(request);

@@ -141,6 +141,48 @@ export class KeyRotator {
 			);
 		}
 
+		// Handle key health reset requests (Internal/Admin only)
+		if (requestUrl.pathname === '/admin/reset-key-health' && request.method === 'POST') {
+			if (!userAccessToken) return createErrorResponse('Unauthorized', 401, protocol);
+
+			const { key, isOAuth } = (await request.json()) as { key: string; isOAuth: boolean };
+			if (!key) return createErrorResponse('Key is required', 400, protocol);
+
+			const stmt = this.ctx.env.DB.prepare(
+				'SELECT api_keys, key_states, oauth_credentials, oauth_key_states FROM api_credentials WHERE access_token = ?'
+			);
+			const dbResult = await stmt.bind(userAccessToken).first<any>();
+			if (!dbResult) return createErrorResponse('Not Found', 404, protocol);
+
+			const { apiKeys, keyStates, oauthCredentialsList, oauthKeyStates } = parseCredentials(dbResult);
+
+			if (isOAuth) {
+				const index = oauthCredentialsList.indexOf(key);
+				if (index !== -1 && oauthKeyStates[index]) {
+					oauthKeyStates[index] = {}; // Reset state
+					await this.ctx.env.DB.prepare(
+						'UPDATE api_credentials SET oauth_key_states = ? WHERE access_token = ?'
+					)
+						.bind(JSON.stringify(oauthKeyStates), userAccessToken)
+						.run();
+				}
+			} else {
+				const index = apiKeys.indexOf(key);
+				if (index !== -1 && keyStates[index]) {
+					keyStates[index] = {}; // Reset state
+					await this.ctx.env.DB.prepare(
+						'UPDATE api_credentials SET key_states = ? WHERE access_token = ?'
+					)
+						.bind(JSON.stringify(keyStates), userAccessToken)
+						.run();
+				}
+			}
+
+			return new Response(JSON.stringify({ success: true }), {
+				headers: { 'Content-Type': 'application/json' },
+			});
+		}
+
 		if (!userAccessToken) {
 			return createErrorResponse('Unauthorized: Access token is required.', 401, protocol);
 		}
