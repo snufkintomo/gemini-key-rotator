@@ -12,4 +12,12 @@ export class StorageHelper {
 	async setApiBaseUrlIndex(index: number): Promise<void> {
 		await this.storage.put('apiBaseUrlIndex', index);
 	}
+
+	async get<T>(key: string): Promise<T | undefined> {
+		return await this.storage.get<T>(key);
+	}
+
+	async put<T>(key: string, value: T): Promise<void> {
+		await this.storage.put(key, value);
+	}
 }

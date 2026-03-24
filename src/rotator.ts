@@ -12,7 +12,7 @@ import { SystemContext } from './utils/context';
 import { createErrorResponse, Protocol } from './utils/errors';
 import { StorageHelper } from './utils/storage';
 import { getStandardRotationIndex, parseCredentials } from './utils/credentials';
-import { sendInvalidTokenEmail } from './utils/email';
+import { sendInvalidTokenEmail, sendExhaustedEmail } from './utils/email';
 
 // --- Types ---
 export interface Env {
@@ -110,6 +110,24 @@ export class KeyRotator {
 
 		if (resendKey && toEmail) {
 			this.ctx.waitUntil(sendInvalidTokenEmail(resendKey, toEmail, tokenType, rawToken, reason));
+		}
+	}
+
+	async notifyExhausted(userToken: string, hasFallbackOAuth: boolean, model: string) {
+		const resendKey = this.ctx.resendApiKey;
+		const toEmail = this.ctx.notificationEmail;
+
+		if (!resendKey || !toEmail) return;
+
+		// Cooldown: 1 hour (3600000 ms)
+		const cooldown = 3600000;
+		const now = Date.now();
+		const lastSentKey = `last_exhausted_email_${userToken}`;
+		const lastSent = await this.storage.get<number>(lastSentKey);
+
+		if (!lastSent || now - lastSent > cooldown) {
+			await this.storage.put(lastSentKey, now);
+			this.ctx.waitUntil(sendExhaustedEmail(resendKey, toEmail, userToken, hasFallbackOAuth, model));
 		}
 	}
 
@@ -260,8 +278,11 @@ export class KeyRotator {
 			);
 
 			if (keyIndexToUse === null) {
-				// Fallback to OAuth if standard API keys are exhausted
-				if (oauthCredentialsList.length > 0) {
+				// Standard keys are exhausted, try fallback to OAuth
+				let hasOAuthAvailable = oauthCredentialsList.length > 0;
+				let oauthFallbacked = false;
+
+				if (hasOAuthAvailable) {
 					oauthIndexToUse = getStandardRotationIndex(
 						oauthCredentialsList,
 						currentOauthIndex,
@@ -272,8 +293,12 @@ export class KeyRotator {
 					if (oauthIndexToUse !== null) {
 						apiKey = oauthCredentialsList[oauthIndexToUse];
 						effectivelyOAuth = true;
+						oauthFallbacked = true;
 					}
 				}
+
+				// Trigger notification for standard key exhaustion
+				this.ctx.waitUntil(this.notifyExhausted(userAccessToken, oauthFallbacked, modelForExhaustion));
 
 				if (!apiKey) {
 					return createErrorResponse(
