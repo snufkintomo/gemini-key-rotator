@@ -14,6 +14,8 @@ import { StorageHelper } from './utils/storage';
 import { getStandardRotationIndex, parseCredentials } from './utils/credentials';
 import { sendInvalidTokenEmail, sendExhaustedEmail } from './utils/email';
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 // --- Types ---
 export interface Env {
 	DB: D1Database;
@@ -392,13 +394,19 @@ export class KeyRotator {
 		let attemptCount = 1;
 		let activeKeys = effectivelyOAuth ? oauthCredentialsList : apiKeys;
 		let activeStates = effectivelyOAuth ? oauthKeyStates : keyStates;
-		let activeIndex = effectivelyOAuth ? oauthIndexToUse! : keyIndexToUse!;
+		let activeIndex = effectivelyOAuth ? (oauthIndexToUse ?? 0) : (keyIndexToUse ?? 0);
 
-		let maxAttempts = Math.min(activeKeys.length, 3);
+		// Calculate total available retries across the current active pool
+		// We limit retries to at most 3 or the number of keys available
+		let maxAttempts = Math.max(1, Math.min(activeKeys.length, 3));
+
 		while (
 			[401, 403, 429, 500, 502, 503, 524].includes(response.status) &&
 			attemptCount < maxAttempts
 		) {
+			const now = Date.now();
+
+			// Mark current key as invalid or exhausted
 			if (response.status === 401 || response.status === 403) {
 				activeStates[activeIndex] = {
 					...activeStates[activeIndex],
@@ -406,7 +414,7 @@ export class KeyRotator {
 				};
 				this.ctx.waitUntil(
 					this.notifyInvalidToken(
-						effectivelyOAuth ? "oauth" : "api_key",
+						effectivelyOAuth ? 'oauth' : 'api_key',
 						apiKey,
 						`API returned ${response.status}`
 					)
@@ -415,16 +423,12 @@ export class KeyRotator {
 				const currentState = activeStates[activeIndex] || {};
 				const currentExhausted = currentState.exhaustedUntil || {};
 				const lastExhaustedUntil = currentExhausted[modelForExhaustion] || 0;
-				const now = Date.now();
 
-				// Exponential backoff: Start with 1 minute, double it each time if hit again before previous cooldown was fully cleared
+				// Exponential backoff logic
 				let cooldown = 60 * 1000;
 				if (lastExhaustedUntil > now - 300 * 1000) {
 					const prevCooldown = lastExhaustedUntil - (now - cooldown);
-					cooldown = Math.min(
-						Math.max(prevCooldown * 2, cooldown * 2),
-						1800 * 1000
-					); // Max half hour
+					cooldown = Math.min(Math.max(prevCooldown * 2, cooldown * 2), 1800 * 1000);
 				}
 
 				activeStates[activeIndex] = {
@@ -436,26 +440,52 @@ export class KeyRotator {
 				};
 			}
 
-			let nextIndex: number | null = null;
-			const now = Date.now();
-			for (let i = 1; i < activeKeys.length; i++) {
-				const idx = (activeIndex + i) % activeKeys.length;
-				if (activeStates[idx]?.invalid) continue;
-				if (
-					modelForExhaustion &&
-					activeStates[idx]?.exhaustedUntil?.[modelForExhaustion] &&
-					activeStates[idx].exhaustedUntil![modelForExhaustion] > now
-				)
-					continue;
-				nextIndex = idx;
+			// Try to find NEXT key in the SAME pool
+			let nextIndex = getStandardRotationIndex(
+				activeKeys,
+				(activeIndex + 1) % activeKeys.length,
+				activeStates,
+				modelForExhaustion,
+				now
+			);
+
+			// If no more keys in current pool, try fallback to OAuth if we were on API keys
+			if (nextIndex === null && !effectivelyOAuth && oauthCredentialsList.length > 0) {
+				// Switch pool to OAuth
+				effectivelyOAuth = true;
+				activeKeys = oauthCredentialsList;
+				activeStates = oauthKeyStates;
+				// Start OAuth rotation from currentOauthIndex
+				nextIndex = getStandardRotationIndex(
+					activeKeys,
+					currentOauthIndex,
+					activeStates,
+					modelForExhaustion,
+					now
+				);
+				// If we switched pool, recalculate maxAttempts for the new pool
+				if (nextIndex !== null) {
+					maxAttempts = attemptCount + Math.min(activeKeys.length, 3);
+				}
+			}
+
+			if (nextIndex === null || (nextIndex === activeIndex && !effectivelyOAuth)) {
 				break;
 			}
 
-			if (nextIndex === null || nextIndex === activeIndex) break;
+			// Update indices and key
 			activeIndex = nextIndex;
-			if (effectivelyOAuth) oauthIndexToUse = nextIndex;
-			else keyIndexToUse = nextIndex;
+			if (effectivelyOAuth) {
+				oauthIndexToUse = nextIndex;
+			} else {
+				keyIndexToUse = nextIndex;
+			}
 			apiKey = activeKeys[activeIndex];
+
+			// Exponential delay: 500ms * 2^(attemptCount - 1)
+			const delay = 1000 * Math.pow(2, attemptCount - 1);
+			await sleep(delay);
+
 			attemptCount++;
 			response = await doProxy(apiKey, clonedRequest.clone() as any);
 
@@ -464,35 +494,42 @@ export class KeyRotator {
 				this.ctx.waitUntil(
 					this.recordUsage(
 						apiKey,
-						effectivelyOAuth ? "oauth" : "api_key",
+						effectivelyOAuth ? 'oauth' : 'api_key',
 						userAccessToken,
 						response.ok,
 						response.status === 429,
-						authMode || "google",
-						model || "unknown"
+						authMode || 'google',
+						model || 'unknown'
 					)
 				);
 			}
 		}
 
 		let updatePromise;
-		if (effectivelyOAuth) {
+		if (effectivelyOAuth || oauthIndexToUse !== null) {
 			const nextOauthIndexForDb =
 				oauthIndexToUse !== null
 					? (oauthIndexToUse + 1) % oauthCredentialsList.length
 					: currentOauthIndex;
+			const nextKeyIndexForDb =
+				keyIndexToUse !== null ? (keyIndexToUse + 1) % apiKeys.length : currentKeyIndex;
+
 			updatePromise = this.ctx.env.DB.prepare(
-				"UPDATE api_credentials SET current_oauth_index = ?, oauth_key_states = ? WHERE access_token = ?"
+				'UPDATE api_credentials SET current_key_index = ?, key_states = ?, current_oauth_index = ?, oauth_key_states = ? WHERE access_token = ?'
 			)
-				.bind(nextOauthIndexForDb, JSON.stringify(oauthKeyStates), userAccessToken)
+				.bind(
+					nextKeyIndexForDb,
+					JSON.stringify(keyStates),
+					nextOauthIndexForDb,
+					JSON.stringify(oauthKeyStates),
+					userAccessToken
+				)
 				.run();
 		} else {
 			const nextKeyIndexForDb =
-				keyIndexToUse !== null
-					? (keyIndexToUse + 1) % apiKeys.length
-					: currentKeyIndex;
+				keyIndexToUse !== null ? (keyIndexToUse + 1) % apiKeys.length : currentKeyIndex;
 			updatePromise = this.ctx.env.DB.prepare(
-				"UPDATE api_credentials SET current_key_index = ?, key_states = ? WHERE access_token = ?"
+				'UPDATE api_credentials SET current_key_index = ?, key_states = ? WHERE access_token = ?'
 			)
 				.bind(nextKeyIndexForDb, JSON.stringify(keyStates), userAccessToken)
 				.run();
