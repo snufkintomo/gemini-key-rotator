@@ -239,9 +239,22 @@ export class KeyRotator {
 			keyStates,
 			oauthCredentialsList,
 			oauthKeyStates,
-			currentKeyIndex,
-			currentOauthIndex,
+			currentKeyIndex: dbKeyIndex,
+			currentOauthIndex: dbOauthIndex,
 		} = parseCredentials(dbResult);
+
+		// Use Durable Object storage for immediate index management
+		let currentKeyIndex = await this.storage.getUserKeyIndex(userAccessToken);
+		if (currentKeyIndex === undefined) {
+			currentKeyIndex = dbKeyIndex;
+			await this.storage.setUserKeyIndex(userAccessToken, currentKeyIndex);
+		}
+
+		let currentOauthIndex = await this.storage.getUserOauthIndex(userAccessToken);
+		if (currentOauthIndex === undefined) {
+			currentOauthIndex = dbOauthIndex;
+			await this.storage.setUserOauthIndex(userAccessToken, currentOauthIndex);
+		}
 
 		const modelForExhaustion = model || '_general_';
 
@@ -270,6 +283,10 @@ export class KeyRotator {
 				return createErrorResponse('No OAuth credentials configured for this account.', 401, protocol);
 			}
 			apiKey = oauthCredentialsList[oauthIndexToUse];
+
+			// Update index in DO storage immediately after selection
+			const nextOauthIndex = (oauthIndexToUse + 1) % oauthCredentialsList.length;
+			await this.storage.setUserOauthIndex(userAccessToken, nextOauthIndex);
 		} else {
 			keyIndexToUse = getStandardRotationIndex(
 				apiKeys,
@@ -296,6 +313,10 @@ export class KeyRotator {
 						apiKey = oauthCredentialsList[oauthIndexToUse];
 						effectivelyOAuth = true;
 						oauthFallbacked = true;
+
+						// Update index in DO storage immediately after selection
+						const nextOauthIndex = (oauthIndexToUse + 1) % oauthCredentialsList.length;
+						await this.storage.setUserOauthIndex(userAccessToken, nextOauthIndex);
 					}
 				}
 
@@ -311,6 +332,10 @@ export class KeyRotator {
 				}
 			} else {
 				apiKey = apiKeys[keyIndexToUse];
+
+				// Update index in DO storage immediately after selection
+				const nextKeyIndex = (keyIndexToUse + 1) % apiKeys.length;
+				await this.storage.setUserKeyIndex(userAccessToken, nextKeyIndex);
 			}
 		}
 
@@ -477,8 +502,14 @@ export class KeyRotator {
 			activeIndex = nextIndex;
 			if (effectivelyOAuth) {
 				oauthIndexToUse = nextIndex;
+				// Update index in DO storage immediately after selection during retry
+				const nextOauthIndex = (oauthIndexToUse + 1) % oauthCredentialsList.length;
+				await this.storage.setUserOauthIndex(userAccessToken, nextOauthIndex);
 			} else {
 				keyIndexToUse = nextIndex;
+				// Update index in DO storage immediately after selection during retry
+				const nextKeyIndex = (keyIndexToUse + 1) % apiKeys.length;
+				await this.storage.setUserKeyIndex(userAccessToken, nextKeyIndex);
 			}
 			apiKey = activeKeys[activeIndex];
 
@@ -506,32 +537,29 @@ export class KeyRotator {
 		}
 
 		let updatePromise;
-		if (effectivelyOAuth || oauthIndexToUse !== null) {
-			const nextOauthIndexForDb =
-				oauthIndexToUse !== null
-					? (oauthIndexToUse + 1) % oauthCredentialsList.length
-					: currentOauthIndex;
-			const nextKeyIndexForDb =
-				keyIndexToUse !== null ? (keyIndexToUse + 1) % apiKeys.length : currentKeyIndex;
+		const nextKeyIndex = keyIndexToUse !== null ? (keyIndexToUse + 1) % apiKeys.length : currentKeyIndex;
+		const nextOauthIndex =
+			oauthIndexToUse !== null
+				? (oauthIndexToUse + 1) % oauthCredentialsList.length
+				: currentOauthIndex;
 
+		if (effectivelyOAuth || oauthIndexToUse !== null) {
 			updatePromise = this.ctx.env.DB.prepare(
 				'UPDATE api_credentials SET current_key_index = ?, key_states = ?, current_oauth_index = ?, oauth_key_states = ? WHERE access_token = ?'
 			)
 				.bind(
-					nextKeyIndexForDb,
+					nextKeyIndex,
 					JSON.stringify(keyStates),
-					nextOauthIndexForDb,
+					nextOauthIndex,
 					JSON.stringify(oauthKeyStates),
 					userAccessToken
 				)
 				.run();
 		} else {
-			const nextKeyIndexForDb =
-				keyIndexToUse !== null ? (keyIndexToUse + 1) % apiKeys.length : currentKeyIndex;
 			updatePromise = this.ctx.env.DB.prepare(
 				'UPDATE api_credentials SET current_key_index = ?, key_states = ? WHERE access_token = ?'
 			)
-				.bind(nextKeyIndexForDb, JSON.stringify(keyStates), userAccessToken)
+				.bind(nextKeyIndex, JSON.stringify(keyStates), userAccessToken)
 				.run();
 		}
 		this.ctx.waitUntil(updatePromise);
