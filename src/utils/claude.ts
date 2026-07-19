@@ -1,6 +1,7 @@
 import { getGeminiModelForClaude } from './models';
 import { parseStream, parseStreamFlush } from './streams';
 import { generateId } from './openai';
+import { stripMetaSchema } from './schema';
 import type { ClaudeCompletionRequest, GeminiResponse, ClaudeMessage, ClaudeTool, ClaudeMessagePart } from '../types';
 
 const API_VERSION = 'v1beta';
@@ -14,20 +15,6 @@ class HttpError extends Error {
 	}
 }
 
-function cleanSchema(schema: any): any {
-	if (!schema || typeof schema !== 'object') return schema;
-	const { $schema, additionalProperties, ...rest } = schema;
-	const newSchema: any = rest;
-	if (newSchema.properties) {
-		for (const key in newSchema.properties) {
-			newSchema.properties[key] = cleanSchema(newSchema.properties[key]);
-		}
-	}
-	if (newSchema.items) {
-		newSchema.items = cleanSchema(newSchema.items);
-	}
-	return newSchema;
-}
 
 export async function transformClaudeMessagesToGeminiContents(messages: ClaudeMessage[]): Promise<{ contents: any[]; system_instruction?: any }> {
 	const contents: any[] = [];
@@ -35,11 +22,21 @@ export async function transformClaudeMessagesToGeminiContents(messages: ClaudeMe
 	for (const item of messages) {
 		if (item.role === 'user' || item.role === 'assistant') {
 			const parts: any[] = [];
+			let currentSignature: string | undefined;
+
 			if (typeof item.content === 'string') {
 				parts.push({ text: item.content });
 			} else if (Array.isArray(item.content)) {
 				for (const part of item.content) {
 					switch (part.type) {
+						case 'thinking':
+							if ((part as any).signature) currentSignature = (part as any).signature;
+							parts.push({
+								thought: true,
+								text: part.thinking,
+								thoughtSignature: (part as any).signature,
+							});
+							break;
 						case 'text':
 							if (part.text) parts.push({ text: part.text });
 							break;
@@ -73,9 +70,14 @@ export async function transformClaudeMessagesToGeminiContents(messages: ClaudeMe
 							});
 							break;
 						case 'tool_result':
+							let toolName = part.tool_use_id;
+							if (part.tool_use_id && part.tool_use_id.includes('_TSIG_')) {
+								const parts = part.tool_use_id.split('_TSIG_');
+								toolName = parts[0];
+							}
 							parts.push({
 								functionResponse: {
-									name: part.tool_use_id,
+									name: toolName,
 									response: { content: part.content },
 								},
 							});
@@ -97,7 +99,26 @@ export async function transformClaudeMessagesToGeminiContents(messages: ClaudeMe
 			}
 		}
 	}
-	return { contents, system_instruction };
+
+	// Merge consecutive same-role messages
+	const mergedContents: any[] = [];
+	for (const content of contents) {
+		if (mergedContents.length > 0 && mergedContents[mergedContents.length - 1].role === content.role) {
+			mergedContents[mergedContents.length - 1].parts.push(...content.parts);
+		} else {
+			mergedContents.push(content);
+		}
+	}
+
+	// Ensure conversation starts with a user message
+	if (mergedContents.length > 0 && mergedContents[0].role === 'model') {
+		mergedContents.unshift({
+			role: 'user',
+			parts: [{ text: '...' }]
+		});
+	}
+
+	return { contents: mergedContents, system_instruction };
 }
 
 export function transformClaudeToolsToGeminiTools(claudeTools?: ClaudeTool[], claudeToolChoice?: ClaudeCompletionRequest['tool_choice']): { tools?: any[]; tool_config?: any } {
@@ -122,7 +143,7 @@ export function transformClaudeToolsToGeminiTools(claudeTools?: ClaudeTool[], cl
 				return {
 					name: tool.name,
 					description: tool.description,
-					parameters: cleanSchema(parameters)
+					parameters: stripMetaSchema(parameters)
 				};
 			})
 		});
@@ -145,6 +166,14 @@ export function transformClaudeToolsToGeminiTools(claudeTools?: ClaudeTool[], cl
 		}
 	}
 	return { tools: geminiTools.length > 0 ? geminiTools : undefined, tool_config };
+}
+
+async function sha256Hex(plain: string): Promise<string> {
+	const encoder = new TextEncoder();
+	const data = encoder.encode(plain);
+	const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+	const hashArray = Array.from(new Uint8Array(hashBuffer));
+	return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
 export async function transformClaudeToGeminiRequest(claudeReq: ClaudeCompletionRequest): Promise<any> {
@@ -171,7 +200,81 @@ export async function transformClaudeToGeminiRequest(claudeReq: ClaudeCompletion
 	if (claudeReq.thinking && claudeReq.thinking.type === 'enabled') generationConfig.thinkingConfig = { thinkingBudget: claudeReq.thinking.budget_tokens || 1024, includeThoughts: true };
 	const harmCategory = ['HARM_CATEGORY_HATE_SPEECH', 'HARM_CATEGORY_SEXUALLY_EXPLICIT', 'HARM_CATEGORY_DANGEROUS_CONTENT', 'HARM_CATEGORY_HARASSMENT', 'HARM_CATEGORY_CIVIC_INTEGRITY'];
 	let safetySettings = harmCategory.map((category) => ({ category, threshold: 'BLOCK_NONE' }));
-	return { contents, system_instruction, generationConfig: Object.keys(generationConfig).length > 0 ? generationConfig : undefined, safetySettings, tools, tool_config };
+
+	// Detect Claude prompt caching (ephemeral cache control)
+	let cacheControlMeta = null;
+	let cacheIndex = -1;
+
+	// Check messages for cache control
+	if (claudeReq.messages && claudeReq.messages.length > 0) {
+		for (let i = 0; i < claudeReq.messages.length; i++) {
+			const msg = claudeReq.messages[i];
+			let hasCache = false;
+			if ((msg as any).cache_control?.type === 'ephemeral') {
+				hasCache = true;
+			} else if (Array.isArray(msg.content)) {
+				for (const part of msg.content) {
+					if ((part as any).cache_control?.type === 'ephemeral') {
+						hasCache = true;
+						break;
+					}
+				}
+			}
+			if (hasCache) {
+				cacheIndex = i;
+			}
+		}
+	}
+
+	// Also check system prompt for cache control
+	let systemHasCache = false;
+	if (claudeReq.system) {
+		if (Array.isArray(claudeReq.system)) {
+			for (const p of claudeReq.system) {
+				if ((p as any).cache_control?.type === 'ephemeral') {
+					systemHasCache = true;
+					break;
+				}
+			}
+		} else if (typeof claudeReq.system === 'object' && (claudeReq.system as any).cache_control?.type === 'ephemeral') {
+			systemHasCache = true;
+		}
+	}
+
+	if (cacheIndex !== -1 || systemHasCache) {
+		// Calculate cacheable prefix payload
+		const cacheableMessages = cacheIndex !== -1 ? claudeReq.messages.slice(0, cacheIndex + 1) : [];
+		const { contents: cacheableContents } = await transformClaudeMessagesToGeminiContents(cacheableMessages);
+		
+		const cacheablePayload = {
+			contents: cacheableContents,
+			system_instruction: system_instruction || null
+		};
+
+		const payloadStr = JSON.stringify(cacheablePayload);
+		const prefixHash = await sha256Hex(payloadStr);
+
+		cacheControlMeta = {
+			hash: prefixHash,
+			cacheable_payload: cacheablePayload,
+			remaining_contents_index: cacheableContents.length
+		};
+	}
+
+	const result: any = { 
+		contents, 
+		system_instruction, 
+		generationConfig: Object.keys(generationConfig).length > 0 ? generationConfig : undefined, 
+		safetySettings, 
+		tools, 
+		tool_config 
+	};
+
+	if (cacheControlMeta) {
+		result.__claude_cache_control__ = cacheControlMeta;
+	}
+
+	return result;
 }
 
 export function transformGeminiToClaudeResponse(geminiRes: GeminiResponse, model: string, id: string, thinking?: string): Response {
@@ -183,16 +286,24 @@ export function transformGeminiToClaudeResponse(geminiRes: GeminiResponse, model
 		const candidate = geminiRes.candidates[0];
 		if (candidate.content?.parts) {
 			for (const part of candidate.content.parts) {
+				// Capture signature from thinking parts or functionCall
+				if ((part as any).thoughtSignature) signature = (part as any).thoughtSignature;
+				if (part.functionCall?.thought_signature) signature = part.functionCall.thought_signature;
+
 				if (part.text) {
 					if ((part as any).thought === true || ((part as any).thought && typeof (part as any).thought === 'string')) {
 						const thoughtContent = (part as any).thought === true ? part.text : (part as any).thought;
 						accumulatedThinking += thoughtContent || part.text;
-						if ((part as any).thoughtSignature) signature = (part as any).thoughtSignature;
 					} else claudeContent.push({ type: 'text', text: part.text });
 				} else if (part.functionCall) {
+					let toolId = `toolu_${generateId()}`;
+					// Encode signature in tool ID for later recovery
+					if (signature) {
+						toolId += `_TSIG_${signature}`;
+					}
 					claudeContent.push({
 						type: 'tool_use',
-						id: `toolu_${generateId()}`,
+						id: toolId,
 						name: part.functionCall.name,
 						input: part.functionCall.args,
 					});
@@ -202,7 +313,6 @@ export function transformGeminiToClaudeResponse(geminiRes: GeminiResponse, model
 				// Capture all variations of thinking/reasoning parts
 				if ((part as any).thought && typeof (part as any).thought === 'string') {
 					accumulatedThinking += (part as any).thought;
-					if ((part as any).thoughtSignature) signature = (part as any).thoughtSignature;
 				} else if ((part as any).thinking && typeof (part as any).thinking === 'string') {
 					accumulatedThinking += (part as any).thinking;
 				} else if ((part as any).reasoning && typeof (part as any).reasoning === 'string') {
@@ -231,7 +341,8 @@ export function transformGeminiToClaudeResponse(geminiRes: GeminiResponse, model
 	}
 	const usage = { 
 		input_tokens: geminiRes.usageMetadata?.promptTokenCount || 0, 
-		output_tokens: (geminiRes.usageMetadata?.candidatesTokenCount || 0) + (geminiRes.usageMetadata?.thoughtsTokenCount || 0) 
+		output_tokens: (geminiRes.usageMetadata?.candidatesTokenCount || 0) + (geminiRes.usageMetadata?.thoughtsTokenCount || 0),
+		cache_read_tokens: geminiRes.usageMetadata?.cachedContentTokenCount || 0
 	};
 	const claudeResponse = { id, type: 'message', role: 'assistant', model, content: claudeContent, stop_reason: stopReason, stop_sequence: null, usage };
 	return new Response(JSON.stringify(claudeResponse), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -240,9 +351,19 @@ export function transformGeminiToClaudeResponse(geminiRes: GeminiResponse, model
 export function transformGeminiToClaudeStreamStart(this: any, controller: any) {
 	controller.enqueue(`event: message_start\ndata: ${JSON.stringify({ type: 'message_start', message: { id: this.id, type: 'message', role: 'assistant', model: this.model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } })}\n\n`);
 	controller.enqueue(`event: ping\ndata: ${JSON.stringify({ type: 'ping' })}\n\n`);
+
+	// Start keep-alive interval
+	this.shared.keepAliveTimer = setInterval(() => {
+		controller.enqueue(': keep-alive\n\n');
+	}, 10000);
 }
 
 export function transformGeminiToClaudeStream(this: any, geminiChunk: any, controller: any) {
+	if (this.shared.keepAliveTimer) {
+		clearInterval(this.shared.keepAliveTimer);
+		this.shared.keepAliveTimer = null;
+	}
+
 	const reasonsMap: Record<string, string> = { 
 		STOP: 'end_turn', 
 		MAX_TOKENS: 'max_tokens', 
@@ -254,7 +375,9 @@ export function transformGeminiToClaudeStream(this: any, geminiChunk: any, contr
 	
 	if (usageMetadata) {
 		this.shared.usage = { 
-			output_tokens: (usageMetadata.candidatesTokenCount || 0) + (usageMetadata.thoughtsTokenCount || 0) 
+			input_tokens: usageMetadata.promptTokenCount || 0,
+			output_tokens: (usageMetadata.candidatesTokenCount || 0) + (usageMetadata.thoughtsTokenCount || 0),
+			cache_read_tokens: usageMetadata.cachedContentTokenCount || 0
 		};
 	}
 
@@ -264,6 +387,10 @@ export function transformGeminiToClaudeStream(this: any, geminiChunk: any, contr
 		
 		if (content?.parts) {
 			for (const part of content.parts) {
+				// Capture thought signature if available
+				if ((part as any).thoughtSignature) this.shared.currentSignature = (part as any).thoughtSignature;
+				if (part.functionCall?.thought_signature) this.shared.currentSignature = part.functionCall.thought_signature;
+
 				// 1. Detect Thinking
 				let thinkingContent = '';
 				if ((part as any).thought === true || ((part as any).thought && typeof (part as any).thought === 'string')) {
@@ -280,7 +407,11 @@ export function transformGeminiToClaudeStream(this: any, geminiChunk: any, contr
 						controller.enqueue(`event: content_block_start\ndata: ${JSON.stringify({
 							type: 'content_block_start',
 							index: this.shared.contentIndex || 0,
-							content_block: { type: 'thinking', thinking: '' }
+							content_block: { 
+								type: 'thinking', 
+								thinking: '',
+								signature: this.shared.currentSignature || 'placeholder'
+							}
 						})}\n\n`);
 						this.shared.currentBlockType = 'thinking';
 						this.shared.contentIndex = (this.shared.contentIndex || 0);
@@ -289,10 +420,13 @@ export function transformGeminiToClaudeStream(this: any, geminiChunk: any, contr
 					// If we were in a text block, we can't switch back to thinking in Claude protocol usually,
 					// but Gemini might interleaved. We'll stick to the current block if it's thinking.
 					if (this.shared.currentBlockType === 'thinking') {
+						const delta: any = { type: 'thinking_delta', thinking: thinkingContent };
+						if (this.shared.currentSignature) delta.signature = this.shared.currentSignature;
+						
 						controller.enqueue(`event: content_block_delta\ndata: ${JSON.stringify({
 							type: 'content_block_delta',
 							index: this.shared.contentIndex || 0,
-							delta: { type: 'thinking_delta', thinking: thinkingContent }
+							delta: delta
 						})}\n\n`);
 					}
 					continue;
@@ -342,12 +476,16 @@ export function transformGeminiToClaudeStream(this: any, geminiChunk: any, contr
 					}
 
 					const toolIndex = this.shared.contentIndex || 0;
+					let toolId = `toolu_${generateId()}`;
+					if (this.shared.currentSignature) {
+						toolId += `_TSIG_${this.shared.currentSignature}`;
+					}
 					controller.enqueue(`event: content_block_start\ndata: ${JSON.stringify({
 						type: 'content_block_start',
 						index: toolIndex,
 						content_block: {
 							type: 'tool_use',
-							id: `toolu_${generateId()}`,
+							id: toolId,
 							name: part.functionCall.name,
 							input: part.functionCall.args || {}
 						}
@@ -374,6 +512,10 @@ export function transformGeminiToClaudeStream(this: any, geminiChunk: any, contr
 }
 
 export function transformGeminiToClaudeStreamFlush(this: any, controller: any) {
+	if (this.shared.keepAliveTimer) {
+		clearInterval(this.shared.keepAliveTimer);
+	}
+
 	// 1. Close any remaining open content block
 	if (this.shared.currentBlockType) {
 		controller.enqueue(`event: content_block_stop\ndata: ${JSON.stringify({ 

@@ -1,49 +1,54 @@
-# Node.js
+# Dependency directories
 node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.pnpm-debug.log*
-.env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
-
-# Cloudflare Workers
 .wrangler/
-dist/
+.dev.vars
 
-# Logs
-*.log
-logs/
-*.log.*
-
-# OS generated files
-.DS_Store
-.Trashes
-Thumbs.db
-
-# VSCode
-.vscode/
-
-.serena/
-TESTING_READY.md
+# Local configurations and secrets
 wrangler.toml
-*.md
+.env
+*.local
+
+# Build outputs and bundles
+dist/
+web-bundles/
+
+# Antigravity & Unrelated Packages (Do not commit)
+package/
+referencecode/
+pi-antigravity-rotator-*.tgz
+ANTIGRAVITY_IMPLEMENTATION_GUIDE.md
+
+# Debug, Local scripts and test assets
+test-*.js
+test-*.ts
+ConsiderationNotest.txt
 flattened-codebase*
+temp_db_migration.sql
+
+# IDEs & System files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+.codegraph/
+.pi-subagents/
+.serena/
+
+# Documentation and Notes (Keep local, do not commit)
 docs/
+memory-bank/
+design-system/
+checklists/
 .bmad*
 .clinerules/
-memory-bank/
-checklists/
 agents/
 agent-teams/
 tasks/
 data/
-web-bundles/
-referencecode/
-temp_db_migration.sql
-wrangler.toml
 
+# Specific Documentations
+HANDOFF.md
+TESTING_READY.md
+implementation_plan.md
+migrate_dates.js
 

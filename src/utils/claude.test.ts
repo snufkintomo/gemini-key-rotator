@@ -59,6 +59,34 @@ describe('Claude to Gemini Transformation', () => {
         }
       });
     });
+
+    it('should merge consecutive same-role messages', async () => {
+      const messages = [
+        { role: 'user', content: 'First user prompt' },
+        { role: 'user', content: 'Second user prompt' },
+        { role: 'assistant', content: 'Response' }
+      ];
+      const result = await transformClaudeMessagesToGeminiContents(messages as any);
+      expect(result.contents).toHaveLength(2); // Consecutive users merged
+      expect(result.contents[0]).toEqual({
+        role: 'user',
+        parts: [
+          { text: 'First user prompt' },
+          { text: 'Second user prompt' }
+        ]
+      });
+    });
+
+    it('should ensure conversation starts with a user message', async () => {
+      const messages = [
+        { role: 'assistant', content: 'Hello user' }
+      ];
+      const result = await transformClaudeMessagesToGeminiContents(messages as any);
+      expect(result.contents).toHaveLength(2); // Dummy user message inserted at front
+      expect(result.contents[0].role).toBe('user');
+      expect(result.contents[0].parts[0].text).toBe('...');
+      expect(result.contents[1].role).toBe('model');
+    });
   });
 
   describe('transformClaudeToolsToGeminiTools', () => {

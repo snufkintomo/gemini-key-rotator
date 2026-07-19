@@ -19,6 +19,7 @@ ENABLE_ORG_GEMINI_API_BASE_URL = "true"
 # ENABLE_USAGE_STATISTICS = "true"
 # NOTIFICATION_EMAIL = "your_notification_email_address"
 # RESEND_API_KEY = "re_your_api_key"
+# UPSTREAM_TIMEOUT_MS = "100000" # Timeout for upstream Gemini API calls in ms (default is 100000)
 
 [triggers]
 crons = ["0 0 * * *"]

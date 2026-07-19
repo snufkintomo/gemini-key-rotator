@@ -1,5 +1,5 @@
 export class StorageHelper {
-	private storage: DurableObjectStorage;
+	public readonly storage: DurableObjectStorage;
 
 	constructor(storage: DurableObjectStorage) {
 		this.storage = storage;
@@ -35,5 +35,21 @@ export class StorageHelper {
 
 	async setUserOauthIndex(userToken: string, index: number): Promise<void> {
 		await this.storage.put(`oauth_index_${userToken}`, index);
+	}
+
+	async delete(key: string): Promise<boolean> {
+		return await this.storage.delete(key);
+	}
+
+	async getAlarm(): Promise<number | null> {
+		return await this.storage.getAlarm();
+	}
+
+	async setAlarm(timestamp: number): Promise<void> {
+		await this.storage.setAlarm(timestamp);
+	}
+
+	async deleteAlarm(): Promise<void> {
+		await this.storage.deleteAlarm();
 	}
 }

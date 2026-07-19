@@ -3,155 +3,31 @@ import adminHtml from './admin.html';
 import loginHtml from './login.html';
 import * as cookie from 'cookie';
 import { KeyRotator } from './rotator';
+import { sanitizeLogBody } from './utils/sanitize';
+import { sendZeroSuccessRateAlertEmail } from './utils/email';
+import { generatePKCE, getDerivedKey, verifyLogin } from './utils/session';
+import { logRequest, logResponse } from './utils/logger';
+import { discoverProjectId } from './utils/oauth';
 
 // --- Types ---
-interface Env {
+export interface Env {
   DB: D1Database;
   GEMINI_API_BASE_URL?: string;
-  ADMIN_ACCESS_TOKEN?: string;
+  ADMIN_ACCESS_TOKEN?: string; // Legacy single-token auth
   OAUTH_CLIENT_ID?: string;
   OAUTH_CLIENT_SECRET?: string;
+  ADMIN_OAUTH_CLIENT_ID?: string;
+  ADMIN_OAUTH_CLIENT_SECRET?: string;
   KEY_ROTATOR: DurableObjectNamespace;
   ENABLE_API_LOGGING?: string;
+  RESEND_API_KEY?: string;
+  NOTIFICATION_EMAIL?: string;
 }
 
-// --- Authentication ---
-async function sha256(plain: string): Promise<ArrayBuffer> {
-    const encoder = new TextEncoder();
-    const data = encoder.encode(plain);
-    return crypto.subtle.digest('SHA-256', data);
-}
-
-function arrayBufferToBase64Url(buffer: ArrayBuffer): string {
-    const bytes = new Uint8Array(buffer);
-    let binary = "";
-    for (let i = 0; i < bytes.byteLength; i++) {
-        binary += String.fromCharCode(bytes[i]);
-    }
-    return btoa(binary)
-        .replace(/\+/g, "-")
-        .replace(/\//g, "_")
-        .replace(/=+$/, "");
-}
-
-async function generatePKCE(): Promise<{ verifier: string; challenge: string }> {
-    const array = new Uint8Array(32);
-    crypto.getRandomValues(array);
-    const verifier = arrayBufferToBase64Url(array.buffer);
-    const challengeBuffer = await sha256(verifier);
-    const challenge = arrayBufferToBase64Url(challengeBuffer);
-    return { verifier, challenge };
-}
-
-async function getDerivedKey(secret: string): Promise<CryptoKey> {
-    const secretBuffer = new TextEncoder().encode(secret);
-    const hashBuffer = await crypto.subtle.digest('SHA-256', secretBuffer);
-    return crypto.subtle.importKey('raw', hashBuffer, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
-}
-
-async function verifyLogin(request: Request, env: Env): Promise<boolean> {
-    const cookieHeader = request.headers.get('Cookie');
-    if (!cookieHeader) return false;
-
-    const cookies = cookie.parse(cookieHeader);
-    const sessionCookie = cookies['session'];
-    if (!sessionCookie) return false;
-
-    const [ivHex, encryptedHex] = sessionCookie.split('.');
-    if (!ivHex || !encryptedHex) return false;
-
-    try {
-        if (!env.ADMIN_ACCESS_TOKEN) {
-            console.error("Security configuration error: ADMIN_ACCESS_TOKEN must be set.");
-            return false;
-        }
-        const key = await getDerivedKey(env.ADMIN_ACCESS_TOKEN);
-        const iv = new Uint8Array(ivHex.match(/.{1,2}/g)!.map((byte: string) => parseInt(byte, 16)));
-        const encrypted = new Uint8Array(encryptedHex.match(/.{1,2}/g)!.map((byte: string) => parseInt(byte, 16)));
-
-        const decrypted = await crypto.subtle.decrypt(
-            { name: 'AES-GCM', iv: iv },
-            key,
-            encrypted
-        );
-
-        const decryptedText = new TextDecoder().decode(decrypted);
-        const { token, expiry } = JSON.parse(decryptedText);
-
-        return token === env.ADMIN_ACCESS_TOKEN && Date.now() < expiry;
-    } catch (e) {
-        console.error("Cookie decryption failed:", e);
-        return false;
-    }
-}
-
-// --- Logging Helper Functions ---
-async function logRequest(env: Env, request: Request, accessToken?: string) {
-  const startTime = Date.now();
-  const headersObj: { [key: string]: string } = {};
-  for (const [key, value] of request.headers as any) {
-    headersObj[key] = value;
-  }
-
-  const logData = {
-    timestamp: new Date().toISOString(),
-    access_token: accessToken || null,
-    request_method: request.method,
-    request_url: request.url,
-    request_headers: JSON.stringify(headersObj),
-    request_body: await request.clone().text(),
-  };
-
-  // Insert into D1
-  const stmt = env.DB.prepare(`
-    INSERT INTO api_logs (timestamp, access_token, request_method, request_url, request_headers, request_body, duration_ms)
-    VALUES (?, ?, ?, ?, ?, ?, 0)
-  `);
-  const result = await stmt.bind(
-    logData.timestamp,
-    logData.access_token,
-    logData.request_method,
-    logData.request_url,
-    logData.request_headers,
-    logData.request_body
-  ).run();
-
-  return { startTime, logId: result.meta.last_row_id };
-}
-
-async function logResponse(env: Env, startTime: number, response: Response, logId: number) {
-  const duration = Date.now() - startTime;
-  let responseBody: string;
-  try {
-    responseBody = await response.clone().text();
-  } catch (e) {
-    responseBody = '<unable to read response>';
-  }
-
-  const headersObj: { [key: string]: string } = {};
-  for (const [key, value] of response.headers as any) {
-    headersObj[key] = value;
-  }
-
-  const logData = {
-    response_status: response.status,
-    response_headers: JSON.stringify(headersObj),
-    response_body: responseBody,
-    duration_ms: duration,
-  };
-
-  // Update the log in D1
-  const stmt = env.DB.prepare(`
-    UPDATE api_logs SET response_status = ?, response_headers = ?, response_body = ?, duration_ms = ?
-    WHERE id = ?
-  `);
-  await stmt.bind(
-    logData.response_status,
-    logData.response_headers,
-    logData.response_body,
-    logData.duration_ms,
-    logId
-  ).run();
+export interface Admin {
+  id: number;
+  email: string;
+  role: 'super_admin' | 'admin';
 }
 
 // --- Cloudflare Worker Entry Point ---
@@ -160,7 +36,7 @@ export default {
     // Daily cleanup: Delete statistics older than 30 days
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - 30);
-    const cutoffStr = cutoffDate.toISOString().split('T')[0];
+    const cutoffStr = cutoffDate.toLocaleDateString('en-CA', { timeZone: 'Asia/Hong_Kong' });
 
     try {
       const stmt = env.DB.prepare('DELETE FROM api_key_usage WHERE usage_date < ?');
@@ -168,6 +44,46 @@ export default {
       console.log(`Auto-cleanup: Deleted ${meta.changes} statistics entries older than ${cutoffStr}`);
     } catch (e) {
       console.error('Auto-cleanup failed:', e);
+    }
+
+    // Daily cleanup: Delete api_logs older than 14 days
+    const logCutoffDate = new Date();
+    logCutoffDate.setDate(logCutoffDate.getDate() - 14);
+    const logCutoffStr = logCutoffDate.toISOString();
+
+    try {
+      const stmt = env.DB.prepare('DELETE FROM api_logs WHERE timestamp < ?');
+      const { meta } = await stmt.bind(logCutoffStr).run();
+      console.log(`Auto-cleanup: Deleted ${meta.changes} log entries older than ${logCutoffStr}`);
+    } catch (e) {
+      console.error('Auto-cleanup of logs failed:', e);
+    }
+
+    // Check for keys with 0% success over the last 7 days and send email notification
+    if (env.RESEND_API_KEY && env.NOTIFICATION_EMAIL) {
+      try {
+        const query = `
+          SELECT raw_key, key_type, SUM(request_count) as total_req, SUM(success_count) as total_success, user_access_token, model
+          FROM api_key_usage
+          WHERE usage_date >= date('now', '-7 days')
+          GROUP BY raw_key, key_type, user_access_token, model
+          HAVING total_req >= 10 AND total_success = 0
+        `;
+        const result = await env.DB.prepare(query).all();
+        if (result.results && result.results.length > 0) {
+          const failedKeys = result.results.map((row: any) => ({
+            rawKey: row.raw_key,
+            keyType: row.key_type,
+            totalRequests: row.total_req,
+            model: row.model,
+            userToken: row.user_access_token,
+          }));
+          await sendZeroSuccessRateAlertEmail(env.RESEND_API_KEY, env.NOTIFICATION_EMAIL, failedKeys);
+          console.log(`Auto-cleanup: Sent 0% success rate alert email for ${failedKeys.length} items`);
+        }
+      } catch (e) {
+        console.error('Failed to run 0% success rate email alert check:', e);
+      }
     }
   },
 
@@ -178,43 +94,166 @@ export default {
   ): Promise<Response> {
     const requestUrl = new URL(request.url);
 
-    // --- Admin Login Routes ---
-    if (requestUrl.pathname === '/admin/login') {
-        if (request.method === 'POST') {
-            try {
-                const clonedRequest = request.clone();
-                const { token } = await clonedRequest.json<{ token: string }>();
-                if (token === env.ADMIN_ACCESS_TOKEN) {
-                    if (!env.ADMIN_ACCESS_TOKEN) {
-                        console.error("Security configuration error: ADMIN_ACCESS_TOKEN must be set.");
-                        return jsonResponse({ error: "Service is not configured." }, 500);
-                    }
-                    const key = await getDerivedKey(env.ADMIN_ACCESS_TOKEN);
-                    const iv = crypto.getRandomValues(new Uint8Array(12));
-                    const expiry = Date.now() + 8 * 60 * 60 * 1000; // 8 hours
-                    const data = JSON.stringify({ token, expiry });
+    // --- Public Route: Retrieve Generated Images (No login required) ---
+    if (requestUrl.pathname === '/api/images/retrieve') {
+        const id = requestUrl.searchParams.get('id');
+        const token = requestUrl.searchParams.get('token');
+        if (!id || !token) {
+            return new Response('Missing parameters', { status: 400 });
+        }
 
-                    const encrypted = await crypto.subtle.encrypt(
-                        { name: 'AES-GCM', iv: iv },
-                        key,
-                        new TextEncoder().encode(data)
-                    );
-                    
+        const stubId = env.KEY_ROTATOR.idFromName(token);
+        const stub = env.KEY_ROTATOR.get(stubId, { locationHint: 'wnam' });
+
+        const forwardRequest = new Request(request.url, request);
+        forwardRequest.headers.set('X-Access-Token', token);
+        forwardRequest.headers.set('X-Auth-Mode', 'google'); // Placeholder mode
+
+        return await stub.fetch(forwardRequest);
+    }
+
+    // --- Admin Login Routes ---
+    if (requestUrl.pathname === '/admin/google-login') {
+        const clientId = env.ADMIN_OAUTH_CLIENT_ID;
+        if (!clientId) return jsonResponse({ error: "Admin OAuth not configured" }, 500);
+
+        const redirectUri = new URL(request.url).origin + "/admin/google-callback";
+        const state = Math.random().toString(36).substring(2, 15);
+        const pkce = await generatePKCE();
+
+        const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+        authUrl.searchParams.set("client_id", clientId);
+        authUrl.searchParams.set("response_type", "code");
+        authUrl.searchParams.set("redirect_uri", redirectUri);
+        authUrl.searchParams.set("scope", "openid email profile");
+        authUrl.searchParams.set("state", state);
+        authUrl.searchParams.set("code_challenge", pkce.challenge);
+        authUrl.searchParams.set("code_challenge_method", "S256");
+
+        return new Response(null, {
+            status: 302,
+            headers: {
+                'Location': authUrl.toString(),
+                'Set-Cookie': `admin_pkce_verifier=${pkce.verifier}; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=600`
+            }
+        });
+    }
+
+    if (requestUrl.pathname === '/admin/google-callback') {
+        const code = requestUrl.searchParams.get('code');
+        const error = requestUrl.searchParams.get('error');
+        if (error) return new Response(`OAuth Error: ${error}`, { status: 400 });
+        if (!code) return new Response("Missing code", { status: 400 });
+
+        const cookies = cookie.parse(request.headers.get('Cookie') || '');
+        const verifier = cookies['admin_pkce_verifier'];
+        if (!verifier) return new Response("Missing verifier", { status: 400 });
+
+        const clientId = env.ADMIN_OAUTH_CLIENT_ID;
+        const clientSecret = env.ADMIN_OAUTH_CLIENT_SECRET;
+        const redirectUri = new URL(request.url).origin + "/admin/google-callback";
+
+        const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+                client_id: clientId!,
+                client_secret: clientSecret!,
+                code,
+                grant_type: "authorization_code",
+                redirect_uri: redirectUri,
+                code_verifier: verifier,
+            }),
+        });
+
+        if (!tokenResponse.ok) return new Response("Token exchange failed", { status: 400 });
+        const tokens = await tokenResponse.json<any>();
+        const idToken = tokens.id_token;
+        if (!idToken) return new Response("No ID token", { status: 400 });
+
+        // Decode ID token (JWT) - only need email
+        const payload = JSON.parse(atob(idToken.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+        const email = payload.email;
+
+        // Check if admin exists
+        const admin = await env.DB.prepare("SELECT id, email, role FROM admins WHERE email = ?").bind(email).first<Admin>();
+        if (!admin) {
+            const loginUrl = new URL(request.url).origin + "/admin";
+            return new Response(null, {
+                status: 302,
+                headers: {
+                    'Location': `${loginUrl}?error=unauthorized&email=${encodeURIComponent(email)}`
+                }
+            });
+        }
+
+        // Create session
+        const secret = env.ADMIN_OAUTH_CLIENT_SECRET || env.ADMIN_ACCESS_TOKEN || "fixed-fallback-secret";
+        const key = await getDerivedKey(secret);
+        const iv = crypto.getRandomValues(new Uint8Array(12));
+        const expiry = Date.now() + 8 * 60 * 60 * 1000; // 8 hours
+        const data = JSON.stringify({ adminId: admin.id, email: admin.email, expiry });
+
+        const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, key, new TextEncoder().encode(data));
+        const ivHex = Array.from(iv).map(b => b.toString(16).padStart(2, '0')).join('');
+        const encryptedHex = Array.from(new Uint8Array(encrypted)).map(b => b.toString(16).padStart(2, '0')).join('');
+
+        const sessionCookie = `${ivHex}.${encryptedHex}`;
+        const redirectUrl = new URL(request.url).origin + "/admin";
+        const headers = new Headers({
+            'Location': redirectUrl,
+            'Set-Cookie': `session=${sessionCookie}; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=28800`
+        });
+        // Clear verifier cookie
+        headers.append('Set-Cookie', `admin_pkce_verifier=; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=0`);
+        
+        return new Response(null, {
+            status: 302,
+            headers
+        });
+    }
+
+    if (requestUrl.pathname === '/admin/logout') {
+        const redirectUrl = new URL(request.url).origin + "/admin";
+        return new Response(null, {
+            status: 302,
+            headers: {
+                'Location': redirectUrl,
+                'Set-Cookie': `session=; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=0`
+            }
+        });
+    }
+
+    if (requestUrl.pathname === '/admin/login') {
+        // Only allow legacy login if token is configured
+        if (request.method === 'POST' && env.ADMIN_ACCESS_TOKEN) {
+            try {
+                const { token } = await request.json<{ token: string }>();
+                if (token === env.ADMIN_ACCESS_TOKEN) {
+                    // Legacy login will act as the first admin (usually super_admin)
+                    const admin = await env.DB.prepare("SELECT id, email, role FROM admins ORDER BY id ASC LIMIT 1").first<Admin>();
+                    if (!admin) return jsonResponse({ error: "System not initialized" }, 500);
+
+                    const secret = env.ADMIN_OAUTH_CLIENT_SECRET || env.ADMIN_ACCESS_TOKEN || "fixed-fallback-secret";
+                    const key = await getDerivedKey(secret);
+                    const iv = crypto.getRandomValues(new Uint8Array(12));
+                    const expiry = Date.now() + 8 * 60 * 60 * 1000;
+                    const data = JSON.stringify({ adminId: admin.id, email: admin.email, expiry });
+
+                    const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, key, new TextEncoder().encode(data));
                     const ivHex = Array.from(iv).map(b => b.toString(16).padStart(2, '0')).join('');
                     const encryptedHex = Array.from(new Uint8Array(encrypted)).map(b => b.toString(16).padStart(2, '0')).join('');
 
                     const sessionCookie = `${ivHex}.${encryptedHex}`;
-
                     return new Response(JSON.stringify({ success: true }), {
                         status: 200,
                         headers: {
-                            'Set-Cookie': `session=${sessionCookie}; HttpOnly; Secure; Path=/; SameSite=Strict; Max-Age=28800`,
+                            'Set-Cookie': `session=${sessionCookie}; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=28800`,
                             'Content-Type': 'application/json'
                         }
                     });
-                } else {
-                    return jsonResponse({ error: 'Invalid token' }, 401);
                 }
+                return jsonResponse({ error: 'Invalid token' }, 401);
             } catch {
                 return jsonResponse({ error: 'Invalid request' }, 400);
             }
@@ -224,14 +263,15 @@ export default {
 
     // --- Protected Admin & API Routes ---
     if (requestUrl.pathname.startsWith('/admin') || requestUrl.pathname.startsWith('/api/')) {
-        const isLoggedIn = await verifyLogin(request, env);
-        if (!isLoggedIn && requestUrl.pathname !== '/admin/login') {
+        const admin = await verifyLogin(request, env);
+        if (!admin) {
             if (requestUrl.pathname.startsWith('/api')) {
                 return jsonResponse({ error: 'Unauthorized' }, 401);
             }
             return new Response(loginHtml, { status: 401, headers: { 'Content-Type': 'text/html;charset=UTF-8' } });
         }
 
+        // From here on, admin is guaranteed to be non-null
         // Serve the admin panel HTML
         if (request.method === 'GET' && requestUrl.pathname === '/admin') {
           return new Response(adminHtml, {
@@ -332,19 +372,17 @@ export default {
                     return jsonResponse({ error: "No refresh token returned. Try revoking access first." }, 400);
                 }
 
-                // Discover project ID
+                const email = decodeJwtEmail(tokens.id_token) || 'unknown_owner';
+
+                // Discover project ID using advanced companion discovery
                 let projectId = 'default';
                 try {
-                    const pRes = await fetch('https://cloudresourcemanager.googleapis.com/v1/projects?filter=lifecycleState:ACTIVE', {
-                        headers: { 'Authorization': `Bearer ${tokens.access_token}` }
-                    });
-                    if (pRes.ok) {
-                        const pData = await pRes.json<any>();
-                        if (pData.projects?.length > 0) projectId = pData.projects[0].projectId;
-                    }
-                } catch (e) {}
+                    projectId = await discoverProjectId(tokens.access_token, email) || 'default';
+                } catch (e) {
+                    console.error("OAuth Exchange: dynamic project discovery failed:", e);
+                }
 
-                const credentialString = `${client_id}:${client_secret}:${tokens.refresh_token}:${projectId}`;
+                const credentialString = `${client_id}:${client_secret}:${tokens.refresh_token}:${projectId}:${email}`;
                 return jsonResponse({ credential_string: credentialString });
             } catch (e: any) {
                 return jsonResponse({ error: e.message }, 500);
@@ -357,14 +395,35 @@ export default {
           const corsHeaders = getCorsHeaders(request);
           const headers = new Headers(corsHeaders);
 
+          const clearDoCache = (accessTokenStr: string) => {
+            ctx.waitUntil((async () => {
+              try {
+                const id = env.KEY_ROTATOR.idFromName(accessTokenStr);
+                const stub = env.KEY_ROTATOR.get(id);
+                await stub.fetch(new Request(`${requestUrl.origin}/admin/clear-cache`, {
+                  method: 'POST',
+                  headers: { 'X-Access-Token': accessTokenStr }
+                }));
+              } catch (e) {
+                console.error('Failed to clear DO cache:', e);
+              }
+            })());
+          };
+
           // GET: Fetch existing keys for a token
           if (request.method === 'GET') {
             const accessToken = request.headers.get('X-Access-Token');
             if (!accessToken) {
-              return jsonResponse({ error: 'X-Access-Token header is required.' }, 400, headers);
+              // Return list of all configured tokens for this admin
+              const query = isOAuth 
+                ? "SELECT access_token FROM api_credentials WHERE owner_admin_id = ? AND oauth_credentials != ''"
+                : "SELECT access_token FROM api_credentials WHERE owner_admin_id = ? AND api_keys != ''";
+              const result = await env.DB.prepare(query).bind(admin.id).all<any>();
+              const tokens = result.results.map((r: any) => r.access_token);
+              return jsonResponse({ tokens }, 200, headers);
             }
-            const query = isOAuth ? "SELECT oauth_credentials FROM api_credentials WHERE access_token = ? AND oauth_credentials != ''" : "SELECT api_keys FROM api_credentials WHERE access_token = ? AND api_keys != ''";
-            const result = await env.DB.prepare(query).bind(accessToken.trim()).first<any>();
+            const query = isOAuth ? "SELECT oauth_credentials, enable_logging, enable_pruning FROM api_credentials WHERE access_token = ? AND owner_admin_id = ? AND oauth_credentials != ''" : "SELECT api_keys, enable_logging, enable_pruning FROM api_credentials WHERE access_token = ? AND owner_admin_id = ? AND api_keys != ''";
+            const result = await env.DB.prepare(query).bind(accessToken.trim(), admin.id).first<any>();
             return jsonResponse(result || {}, 200, headers);
           }
 
@@ -379,6 +438,15 @@ export default {
                 return jsonResponse({ error: 'A valid Access Token (at least 10 characters) is required.' }, 400, headers);
               }
 
+              // Check if token belongs to someone else
+              const existing = await env.DB.prepare("SELECT owner_admin_id FROM api_credentials WHERE access_token = ?").bind(accessToken).first<{owner_admin_id: number}>();
+              if (existing && existing.owner_admin_id !== admin.id) {
+                return jsonResponse({ error: 'This Access Token is already owned by another admin.' }, 403, headers);
+              }
+
+              const enableLogging = (body.enable_logging === true || body.enable_logging === 1 || body.enable_logging === '1') ? 1 : 0;
+              const enablePruning = (body.enable_pruning === undefined || body.enable_pruning === true || body.enable_pruning === 1 || body.enable_pruning === '1') ? 1 : 0;
+
               if (isOAuth) {
                 const oauthInput = body.oauth_credentials;
                 if (!oauthInput || typeof oauthInput !== 'string' || oauthInput.trim() === '') {
@@ -388,14 +456,17 @@ export default {
                 const oauthString = oauthKeys.join(',');
 
                 const stmt = env.DB.prepare(
-                  `INSERT INTO api_credentials (access_token, oauth_credentials, current_oauth_index, oauth_key_states, api_keys, current_key_index, key_states)
-                   VALUES (?, ?, 0, '[]', '', 0, '[]')
+                  `INSERT INTO api_credentials (access_token, owner_admin_id, oauth_credentials, current_oauth_index, oauth_key_states, api_keys, current_key_index, key_states, enable_logging, enable_pruning)
+                   VALUES (?, ?, ?, 0, '[]', '', 0, '[]', ?, ?)
                    ON CONFLICT(access_token) DO UPDATE SET
                      oauth_credentials = excluded.oauth_credentials,
                      current_oauth_index = 0,
-                     oauth_key_states = '[]'`
+                     oauth_key_states = '[]',
+                     owner_admin_id = excluded.owner_admin_id,
+                     enable_logging = excluded.enable_logging,
+                     enable_pruning = excluded.enable_pruning`
                 );
-                await stmt.bind(accessToken, oauthString).run();
+                await stmt.bind(accessToken, admin.id, oauthString, enableLogging, enablePruning).run();
               } else {
                 const keysInput = body.api_keys;
                 if (!keysInput || typeof keysInput !== 'string' || keysInput.trim() === '') {
@@ -405,16 +476,20 @@ export default {
                 const apiKeysString = apiKeys.join(',');
 
                 const stmt = env.DB.prepare(
-                  `INSERT INTO api_credentials (access_token, api_keys, current_key_index, key_states, oauth_credentials, current_oauth_index, oauth_key_states)
-                   VALUES (?, ?, 0, '[]', '', 0, '[]')
+                  `INSERT INTO api_credentials (access_token, owner_admin_id, api_keys, current_key_index, key_states, oauth_credentials, current_oauth_index, oauth_key_states, enable_logging, enable_pruning)
+                   VALUES (?, ?, ?, 0, '[]', '', 0, '[]', ?, ?)
                    ON CONFLICT(access_token) DO UPDATE SET
                      api_keys = excluded.api_keys,
                      current_key_index = 0,
-                     key_states = '[]'`
+                     key_states = '[]',
+                     owner_admin_id = excluded.owner_admin_id,
+                     enable_logging = excluded.enable_logging,
+                     enable_pruning = excluded.enable_pruning`
                 );
-                await stmt.bind(accessToken, apiKeysString).run();
+                await stmt.bind(accessToken, admin.id, apiKeysString, enableLogging, enablePruning).run();
               }
 
+              clearDoCache(accessToken);
               return jsonResponse({ access_token: accessToken }, 200, headers);
 
             } catch (e: any) {
@@ -433,19 +508,21 @@ export default {
               }
 
               if (isOAuth) {
-                const stmt = env.DB.prepare("UPDATE api_credentials SET oauth_credentials = '', current_oauth_index = 0, oauth_key_states = '[]' WHERE access_token = ?");
-                const { meta } = await stmt.bind(accessToken.trim()).run();
+                const stmt = env.DB.prepare("UPDATE api_credentials SET oauth_credentials = '', current_oauth_index = 0, oauth_key_states = '[]' WHERE access_token = ? AND owner_admin_id = ?");
+                const { meta } = await stmt.bind(accessToken.trim(), admin.id).run();
                 if (meta.changes > 0) {
+                  clearDoCache(accessToken.trim());
                   return jsonResponse({ message: 'OAuth credentials cleared successfully.' }, 200, headers);
                 }
               } else {
-                const stmt = env.DB.prepare("DELETE FROM api_credentials WHERE access_token = ?");
-                const { meta } = await stmt.bind(accessToken.trim()).run();
+                const stmt = env.DB.prepare("DELETE FROM api_credentials WHERE access_token = ? AND owner_admin_id = ?");
+                const { meta } = await stmt.bind(accessToken.trim(), admin.id).run();
                 if (meta.changes > 0) {
+                  clearDoCache(accessToken.trim());
                   return jsonResponse({ message: 'Access Token deleted successfully.' }, 200, headers);
                 }
               }
-              return jsonResponse({ message: 'Access Token not found.' }, 404, headers);
+              return jsonResponse({ message: 'Access Token not found or not owned by you.' }, 404, headers);
             } catch (e: any) {
               console.error("Error deleting Access Token:", e);
               return jsonResponse({ error: 'Failed to process request.' }, 500, headers);
@@ -468,33 +545,72 @@ export default {
                 const page = parseInt(requestUrl.searchParams.get('page') || '1');
                 const limit = parseInt(requestUrl.searchParams.get('limit') || '50');
                 const offset = (page - 1) * limit;
+                const showAll = requestUrl.searchParams.get('show_all') === 'true';
 
-                const stmt = env.DB.prepare("SELECT * FROM api_logs ORDER BY timestamp DESC LIMIT ? OFFSET ?");
-                const logs = await stmt.bind(limit, offset).all();
+                let logs;
+                let total = 0;
 
-                const countStmt = env.DB.prepare("SELECT COUNT(*) as total FROM api_logs");
-                const totalResult = await countStmt.first<{ total: number }>();
-                const total = totalResult?.total || 0;
+                if (admin.role === 'super_admin' && showAll) {
+                  const stmt = env.DB.prepare("SELECT * FROM api_logs ORDER BY timestamp DESC LIMIT ? OFFSET ?");
+                  const result = await stmt.bind(limit, offset).all();
+                  logs = result.results;
 
-                return jsonResponse({ logs: logs.results, total, page, limit }, 200, headers);
+                  const countStmt = env.DB.prepare("SELECT COUNT(*) as total FROM api_logs");
+                  const totalResult = await countStmt.first<{ total: number }>();
+                  total = totalResult?.total || 0;
+                } else {
+                  const stmt = env.DB.prepare(`
+                    SELECT * FROM api_logs
+                    WHERE access_token IN (
+                      SELECT access_token FROM api_credentials WHERE owner_admin_id = ?
+                    )
+                    ORDER BY timestamp DESC LIMIT ? OFFSET ?
+                  `);
+                  const result = await stmt.bind(admin.id, limit, offset).all();
+                  logs = result.results;
+
+                  const countStmt = env.DB.prepare(`
+                    SELECT COUNT(*) as total FROM api_logs
+                    WHERE access_token IN (
+                      SELECT access_token FROM api_credentials WHERE owner_admin_id = ?
+                    )
+                  `);
+                  const totalResult = await countStmt.bind(admin.id).first<{ total: number }>();
+                  total = totalResult?.total || 0;
+                }
+
+                return jsonResponse({ logs, total, page, limit }, 200, headers);
               } catch (e: any) {
                 console.error("Error fetching logs:", e);
                 return jsonResponse({ error: 'Failed to fetch logs.' }, 500, headers);
               }
             }
 
-            // DELETE: Clear all logs
+            // DELETE: Clear logs
             if (request.method === 'DELETE') {
               try {
-                const stmt = env.DB.prepare("DELETE FROM api_logs");
-                const { meta } = await stmt.bind().run();
+                const showAll = requestUrl.searchParams.get('show_all') === 'true';
+                let stmt;
+                
+                if (admin.role === 'super_admin' && showAll) {
+                  stmt = env.DB.prepare("DELETE FROM api_logs");
+                } else {
+                  stmt = env.DB.prepare(`
+                    DELETE FROM api_logs
+                    WHERE access_token IN (
+                      SELECT access_token FROM api_credentials WHERE owner_admin_id = ?
+                    )
+                  `);
+                }
+
+                const { meta } = await (admin.role === 'super_admin' && showAll ? stmt.bind().run() : stmt.bind(admin.id).run());
 
                 return jsonResponse({
-                  message: `${meta.changes} logs deleted successfully.`,
+                  message: 'Logs deleted successfully.',
                   deletedCount: meta.changes
                 }, 200, headers);
               } catch (e: any) {
-                console.error("Error clearing all logs:", e);
+                console.error("Error clearing logs:", e);
                 return jsonResponse({ error: 'Failed to clear logs.' }, 500, headers);
               }
             }
@@ -513,13 +629,24 @@ export default {
               // DELETE specific log
               if (request.method === 'DELETE') {
                 try {
-                  const stmt = env.DB.prepare("DELETE FROM api_logs WHERE id = ?");
-                  const { meta } = await stmt.bind(logId).run();
+                  let stmt;
+                  if (admin.role === 'super_admin') {
+                    stmt = env.DB.prepare("DELETE FROM api_logs WHERE id = ?");
+                  } else {
+                    stmt = env.DB.prepare(`
+                      DELETE FROM api_logs 
+                      WHERE id = ? AND access_token IN (
+                        SELECT access_token FROM api_credentials WHERE owner_admin_id = ?
+                      )
+                    `);
+                  }
+                  
+                  const { meta } = await (admin.role === 'super_admin' ? stmt.bind(logId) : stmt.bind(logId, admin.id)).run();
 
                   if (meta.changes > 0) {
                     return jsonResponse({ message: 'Log deleted successfully.' }, 200, headers);
                   } else {
-                    return jsonResponse({ message: 'Log not found.' }, 404, headers);
+                    return jsonResponse({ message: 'Log not found or unauthorized.' }, 404, headers);
                   }
                 } catch (e: any) {
                   console.error("Error deleting log:", e);
@@ -529,6 +656,35 @@ export default {
             }
             return jsonResponse({ error: 'Not Found' }, 404, headers);
           }
+        }
+
+        // --- Admin Info ---
+        if (requestUrl.pathname === '/api/admin-info') {
+            return jsonResponse(admin);
+        }
+
+        // --- Admin Management API (Super Admin Only) ---
+        if (requestUrl.pathname === '/api/admins') {
+            if (admin.role !== 'super_admin') return jsonResponse({ error: 'Forbidden' }, 403);
+            
+            if (request.method === 'GET') {
+                const admins = await env.DB.prepare("SELECT * FROM admins ORDER BY id ASC").all();
+                return jsonResponse(admins.results);
+            }
+            if (request.method === 'POST') {
+                const { email, role } = await request.json<any>();
+                if (!email) return jsonResponse({ error: 'Email required' }, 400);
+                await env.DB.prepare("INSERT INTO admins (email, role) VALUES (?, ?) ON CONFLICT(email) DO UPDATE SET role = excluded.role")
+                    .bind(email, role || 'admin').run();
+                return jsonResponse({ success: true });
+            }
+            if (request.method === 'DELETE') {
+                const email = requestUrl.searchParams.get('email');
+                if (!email) return jsonResponse({ error: 'Email required' }, 400);
+                if (email === 'remus.to@gmail.com') return jsonResponse({ error: 'Cannot delete primary super admin' }, 403);
+                await env.DB.prepare("DELETE FROM admins WHERE email = ?").bind(email).run();
+                return jsonResponse({ success: true });
+            }
         }
 
         // Handle Key Health API
@@ -546,6 +702,13 @@ export default {
             if (!accessToken) {
               return jsonResponse({ error: 'X-Access-Token header is required.' }, 400, headers);
             }
+
+            // Verify ownership
+            const existing = await env.DB.prepare("SELECT owner_admin_id FROM api_credentials WHERE access_token = ?").bind(accessToken.trim()).first<{owner_admin_id: number}>();
+            if (!existing || existing.owner_admin_id !== admin.id) {
+              return jsonResponse({ error: 'Access Token not found or not owned by you.' }, 404, headers);
+            }
+
             const id = env.KEY_ROTATOR.idFromName(accessToken);
             const stub = env.KEY_ROTATOR.get(id, { locationHint: 'wnam' });
             
@@ -574,6 +737,12 @@ export default {
               return jsonResponse({ error: 'Access token is required.' }, 400, headers);
             }
 
+            // Verify ownership
+            const existing = await env.DB.prepare("SELECT owner_admin_id FROM api_credentials WHERE access_token = ?").bind(accessToken.trim()).first<{owner_admin_id: number}>();
+            if (!existing || existing.owner_admin_id !== admin.id) {
+              return jsonResponse({ error: 'Access Token not found or not owned by you.' }, 404, headers);
+            }
+
             const id = env.KEY_ROTATOR.idFromName(accessToken);
             const stub = env.KEY_ROTATOR.get(id, { locationHint: 'wnam' });
             
@@ -596,26 +765,87 @@ export default {
           }
         }
 
+        if (requestUrl.pathname === '/api/key-diagnose') {
+          const corsHeaders = getCorsHeaders(request);
+          const headers = new Headers(corsHeaders);
+
+          if (request.method === 'POST') {
+            const body = await request.json<any>();
+            const accessToken = body.access_token || request.headers.get('X-Access-Token');
+
+            if (!accessToken) {
+              return jsonResponse({ error: 'Access token is required.' }, 400, headers);
+            }
+
+            // Verify ownership
+            const existing = await env.DB.prepare("SELECT owner_admin_id FROM api_credentials WHERE access_token = ?").bind(accessToken.trim()).first<{owner_admin_id: number}>();
+            if (!existing || existing.owner_admin_id !== admin.id) {
+              return jsonResponse({ error: 'Access Token not found or not owned by you.' }, 404, headers);
+            }
+
+            const id = env.KEY_ROTATOR.idFromName(accessToken);
+            const stub = env.KEY_ROTATOR.get(id, { locationHint: 'wnam' });
+            
+            const forwardHeaders = new Headers(request.headers);
+            forwardHeaders.set('X-Access-Token', accessToken);
+            forwardHeaders.set('X-Auth-Mode', 'google');
+            forwardHeaders.set('Content-Type', 'application/json');
+
+            const forwardRequest = new Request(request.url, {
+              method: 'POST',
+              headers: forwardHeaders,
+              body: JSON.stringify(body)
+            });
+            
+            const internalUrl = new URL(request.url);
+            internalUrl.pathname = '/admin/key-diagnose';
+            
+            const response = await stub.fetch(new Request(internalUrl.toString(), forwardRequest));
+            return new Response(response.body, { status: response.status, headers: new Headers(corsHeaders) });
+          }
+        }
+
         // Handle Statistics Trends API
         if (requestUrl.pathname === '/api/statistics/trends') {
           const corsHeaders = getCorsHeaders(request);
           const headers = new Headers(corsHeaders);
           if (request.method === 'GET') {
             try {
-              // Group usage by date to provide trend data
-              const stmt = env.DB.prepare(`
-                SELECT 
-                  usage_date, 
-                  SUM(request_count) as total_requests, 
-                  SUM(success_count) as total_success, 
-                  SUM(error_429_count) as total_429
-                FROM api_key_usage 
-                GROUP BY usage_date 
-                ORDER BY usage_date ASC
-                LIMIT 30
-              `);
+              const allParam = requestUrl.searchParams.get('all') === 'true';
+              const showAll = admin.role === 'super_admin' && allParam;
+
+              let stmt;
+              if (showAll) {
+                // Group usage by date to provide trend data
+                stmt = env.DB.prepare(`
+                  SELECT 
+                    usage_date, 
+                    SUM(request_count) as total_requests, 
+                    SUM(success_count) as total_success, 
+                    SUM(error_429_count) as total_429
+                  FROM api_key_usage 
+                  GROUP BY usage_date 
+                  ORDER BY usage_date DESC
+                  LIMIT 30
+                `);
+              } else {
+                stmt = env.DB.prepare(`
+                  SELECT 
+                    u.usage_date, 
+                    SUM(u.request_count) as total_requests, 
+                    SUM(u.success_count) as total_success, 
+                    SUM(u.error_429_count) as total_429
+                  FROM api_key_usage u
+                  JOIN api_credentials c ON u.user_access_token = c.access_token
+                  WHERE c.owner_admin_id = ?
+                  GROUP BY u.usage_date 
+                  ORDER BY u.usage_date DESC
+                  LIMIT 30
+                `).bind(admin.id);
+              }
               const result = await stmt.all();
-              return jsonResponse(result.results, 200, headers);
+              const trendData = result.results ? [...result.results].reverse() : [];
+              return jsonResponse(trendData, 200, headers);
             } catch (e: any) {
               console.error("Error fetching trend statistics:", e);
               return jsonResponse({ error: 'Failed to fetch trend statistics.' }, 500, headers);
@@ -630,7 +860,21 @@ export default {
 
           if (request.method === 'GET') {
             try {
-              const stmt = env.DB.prepare("SELECT * FROM api_key_usage ORDER BY usage_date DESC, request_count DESC");
+              const allParam = requestUrl.searchParams.get('all') === 'true';
+              const showAll = admin.role === 'super_admin' && allParam;
+
+              let stmt;
+              if (showAll) {
+                stmt = env.DB.prepare("SELECT * FROM api_key_usage ORDER BY usage_date DESC, request_count DESC");
+              } else {
+                stmt = env.DB.prepare(`
+                  SELECT u.* 
+                  FROM api_key_usage u
+                  JOIN api_credentials c ON u.user_access_token = c.access_token
+                  WHERE c.owner_admin_id = ?
+                  ORDER BY u.usage_date DESC, u.request_count DESC
+                `).bind(admin.id);
+              }
               const result = await stmt.all();
               return jsonResponse(result.results, 200, headers);
             } catch (e: any) {
@@ -641,7 +885,20 @@ export default {
 
           if (request.method === 'DELETE') {
             try {
-              const stmt = env.DB.prepare("DELETE FROM api_key_usage");
+              const allParam = requestUrl.searchParams.get('all') === 'true';
+              const deleteAll = admin.role === 'super_admin' && allParam;
+
+              let stmt;
+              if (deleteAll) {
+                stmt = env.DB.prepare("DELETE FROM api_key_usage");
+              } else {
+                stmt = env.DB.prepare(`
+                  DELETE FROM api_key_usage 
+                  WHERE user_access_token IN (
+                    SELECT access_token FROM api_credentials WHERE owner_admin_id = ?
+                  )
+                `).bind(admin.id);
+              }
               const { meta } = await stmt.run();
               return jsonResponse({ message: 'Statistics cleared successfully.', deletedCount: meta.changes }, 200, headers);
             } catch (e: any) {
@@ -716,7 +973,21 @@ export default {
       // Initialize logging variables
       let startTime: number = 0;
       let logId: number | undefined;
-      const enableLogging = env.ENABLE_API_LOGGING === "true";
+      
+      // Get logging and pruning settings for this access token
+      let enableLogging = env.ENABLE_API_LOGGING === "true";
+      let enablePruning = true; // default to true
+      try {
+        const tokenMeta = await env.DB.prepare("SELECT enable_logging, enable_pruning FROM api_credentials WHERE access_token = ?").bind(accessToken).first<{enable_logging: number, enable_pruning: number | null}>();
+        if (tokenMeta) {
+          if (!enableLogging) {
+            enableLogging = tokenMeta.enable_logging === 1;
+          }
+          enablePruning = tokenMeta.enable_pruning !== 0; // default to true if null or 1, false only if exactly 0
+        }
+      } catch (e) {
+        console.error("Error reading token settings:", e);
+      }
 
       if (enableLogging) {
         // Log the incoming request
@@ -730,6 +1001,7 @@ export default {
 
       const forwardRequest = new Request(request.url, request);
       forwardRequest.headers.set("X-Access-Token", accessToken);
+      forwardRequest.headers.set("X-Enable-Pruning", enablePruning ? "true" : "false");
       
       if (openAIMode) {
         forwardRequest.headers.set("X-Auth-Mode", "openai");
@@ -805,4 +1077,18 @@ function handleOptions(request: Request): Response {
       headers: { Allow: "GET, HEAD, POST, OPTIONS, DELETE" },
     });
   }
+}
+
+function decodeJwtEmail(idToken: string | undefined): string | undefined {
+	if (!idToken) return undefined;
+	try {
+		const parts = idToken.split('.');
+		if (parts.length < 2) return undefined;
+		const payloadBase64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+		const payloadJson = atob(payloadBase64);
+		const payload = JSON.parse(payloadJson);
+		return payload.email;
+	} catch (e) {
+		return undefined;
+	}
 }

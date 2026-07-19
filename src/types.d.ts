@@ -11,6 +11,7 @@ declare module './login.html' {
 export interface KeyState {
 	exhaustedUntil?: { [model: string]: number };
 	invalid?: boolean;
+	modelUnavailable?: { [model: string]: boolean }; // permanently unavailable model for this key (e.g. model deprecated for new users)
 }
 
 export interface ApiCredentials {
@@ -34,9 +35,12 @@ export interface GeminiModelsList {
 
 export interface GeminiPart {
     text?: string;
+    thought?: boolean | string;
+    thoughtSignature?: string;
     functionCall?: {
         name: string;
         args: Record<string, any>;
+        thought_signature?: string;
     };
 }
 
@@ -56,6 +60,7 @@ export interface GeminiResponse {
         candidatesTokenCount?: number;
         totalTokenCount?: number;
         thoughtsTokenCount?: number;
+        cachedContentTokenCount?: number;
     };
 }
 

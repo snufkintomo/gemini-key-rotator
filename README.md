@@ -14,11 +14,22 @@ The project features a modular architecture with native compatibility layers for
     - **OpenAI Compatibility:** Drop-in replacement for OpenAI API (`/v1/chat/completions`, `/v1/embeddings`, `/v1/models`).
     - **Claude Compatibility:** Supports Claude's `/v1/messages` and `/v1/models` endpoints, including "thinking" mode.
     - **Gemini Native Support:** Full support for Google Gemini API formats.
+- **Three-Level Dynamic Model Routing & Caching:**
+    - **Level 1 (Proactive background sync):** Automatically scans and stores the precise model support maps for all active OAuth credentials during a 12-hour background Durable Object alarm.
+    - **Level 2 (Reactive de-authorization):** Instantly flags a specific model as unsupported on a key upon receiving a 404 from Google, preventing future routing of that model to the same key.
+    - **Level 3 (Optimistic fallback):** If a model is flagged as unavailable across all keys, the rotator falls back to healthy keys rather than throwing errors.
 - **Advanced Key Rotation:**
-    - Rotates through standard Gemini API keys.
-    - Supports Google OAuth 2.0 credentials for high-tier API access.
-    - Automatic failover and exhaustion tracking (cooldowns) managed via **Cloudflare Durable Objects**.
-- **Secure Admin Panel:** Web-based dashboard for managing access tokens, API keys, and monitoring system health.
+    - Rotates through standard Gemini API Keys and Google OAuth 2.0 Credentials.
+    - **First-Party Google Credentials:** Configured with authentic Google Gemini CLI Client credentials, providing clean, branded Google Consent screens and standard implicit scopes.
+    - **Bypass AI Gateway for OAuth:** Stream and non-stream OAuth requests route directly to Google endpoints, bypassing the Cloudflare AI Gateway completely to prevent scope or validation issues.
+    - **Sub-Millisecond High-Pressure Rotation:** Leverages in-memory synchronous index tracking and pre-fetch operations to completely remove storage/database writes from the request pathway, reducing key switch overhead to <1ms.
+    - **Zero-Delay Failover:** Eliminates sleep delays when switching to a different API key during error recovery.
+    - **Smart Handshake Timeout:** 15s connection timeouts prevent hung upstream connections from stalling resources.
+    - **Zero-Latency Cache Prefetching:** Configures a 1-hour credentials cache TTL and automatically prefetches updates 5 minutes before expiration to completely eliminate D1 read latency spikes.
+    - **Active Cache Invalidation:** Instantly evicts DO cache upon credentials update/delete to keep configuration current in real-time.
+- **Secure Admin Panel & Statistics Filtering:** Web-based dashboard for managing access tokens, API keys, and monitoring system health.
+    - **Clean Stats Noise Filtering (Scheme 2):** Filters out client-side 404 errors (routing/model typos) from statistics logging to prevent artificial success-rate drops, while preserving 403 errors for admin health monitoring.
+    - **Multi-Admin isolation**: Usage stats, trends, and statistics purging are isolated per admin by default, with super-admin toggle overrides.
 - **Detailed Logging:** Usage tracking, performance metrics, and request/response logging stored in **Cloudflare D1**.
 - **AI Gateway Integration:** Seamless integration with Cloudflare AI Gateway for enhanced observability and caching.
 - **OAuth 2.0 Management:** Built-in flow for authorizing and exchanging Google Cloud credentials with PKCE support.

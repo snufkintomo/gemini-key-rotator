@@ -3,60 +3,223 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Admin Login</title>
+    <title>Admin Login - Gemini Key Rotator</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
+        :root {
+            /* Light Theme (default) */
+            --background: #f1f5f9;
+            --card-background: #ffffff;
+            --text-primary: #0f172a;
+            --text-secondary: #475569;
+            --border-color: #cbd5e1;
+            --accent-color: #0d9488;
+            --accent-color-hover: #0f766e;
+            --accent-color-light: #f0fdfa;
+            --error-bg: #fef2f2;
+            --error-border: #fca5a5;
+            --error-text: #b91c1c;
+            --google-btn-bg: #ffffff;
+            --google-btn-border: #cbd5e1;
+            --google-btn-text: #334155;
+            --google-btn-hover: #f8fafc;
+            --shadow-lg: 0 10px 25px -5px rgba(0, 0, 0, 0.08), 0 8px 10px -6px rgba(0, 0, 0, 0.04);
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                /* Dark/OLED Theme (Developer-focused) */
+                --background: #0f172a;
+                --card-background: #1e293b;
+                --text-primary: #f8fafc;
+                --text-secondary: #94a3b8;
+                --border-color: #334155;
+                --accent-color: #2dd4bf;
+                --accent-color-hover: #14b8a6;
+                --accent-color-light: #115e59;
+                --error-bg: #4c0519;
+                --error-border: #991b1b;
+                --error-text: #fca5a5;
+                --google-btn-bg: #1e293b;
+                --google-btn-border: #334155;
+                --google-btn-text: #e2e8f0;
+                --google-btn-hover: #0f172a;
+                --shadow-lg: 0 10px 25px -5px rgba(0, 0, 0, 0.4), 0 8px 10px -6px rgba(0, 0, 0, 0.3);
+            }
+        }
+
         body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
             display: flex;
             justify-content: center;
             align-items: center;
             height: 100vh;
             margin: 0;
-            background-color: #f0f2f5;
-        }
-        .login-container {
-            background: white;
-            padding: 2rem;
-            border-radius: 8px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-            text-align: center;
-        }
-        h1 {
-            margin-bottom: 1.5rem;
-        }
-        input[type="password"] {
-            width: 100%;
-            padding: 0.75rem;
-            margin-bottom: 1rem;
-            border: 1px solid #ccc;
-            border-radius: 4px;
+            background-color: var(--background);
+            color: var(--text-primary);
+            transition: background-color 0.3s ease, color 0.3s ease;
+            padding: 1rem;
             box-sizing: border-box;
         }
+
+        .login-container {
+            background: var(--card-background);
+            padding: 2.5rem 2rem;
+            border-radius: 12px;
+            box-shadow: var(--shadow-lg);
+            text-align: center;
+            width: 100%;
+            max-width: 400px;
+            border: 1px solid var(--border-color);
+            transition: all 0.3s ease;
+        }
+
+        h1 {
+            margin-top: 0;
+            margin-bottom: 1.5rem;
+            font-size: 1.75rem;
+            font-weight: 700;
+        }
+
+        input[type="password"] {
+            width: 100%;
+            padding: 0.75rem 1rem;
+            margin-bottom: 1rem;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            background-color: var(--card-background);
+            color: var(--text-primary);
+            font-size: 1rem;
+            box-sizing: border-box;
+            transition: all 0.2s ease;
+        }
+
+        input[type="password"]:focus {
+            outline: none;
+            border-color: var(--accent-color);
+            box-shadow: 0 0 0 3px var(--accent-color-light);
+        }
+
         button {
             width: 100%;
             padding: 0.75rem;
             border: none;
-            border-radius: 4px;
-            background-color: #007bff;
+            border-radius: 8px;
+            background-color: var(--accent-color);
             color: white;
             font-size: 1rem;
+            font-weight: 600;
             cursor: pointer;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
         }
+
         button:hover {
-            background-color: #0056b3;
+            background-color: var(--accent-color-hover);
+            transform: translateY(-1px);
         }
+
+        button:active {
+            transform: translateY(1px);
+        }
+
+        button:focus-visible {
+            outline: 2px solid var(--accent-color);
+            outline-offset: 2px;
+        }
+
         .error {
-            color: #dc3545;
+            color: var(--error-text);
             margin-top: 1rem;
+            font-size: 0.9rem;
+            font-weight: 500;
+        }
+
+        .divider {
+            margin: 1.5rem 0;
+            display: flex;
+            align-items: center;
+            text-align: center;
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            font-weight: 500;
+        }
+
+        .divider::before, .divider::after {
+            content: '';
+            flex: 1;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .divider:not(:empty)::before {
+            margin-right: .75em;
+        }
+
+        .divider:not(:empty)::after {
+            margin-left: .75em;
+        }
+
+        .google-btn {
+            background-color: var(--google-btn-bg);
+            color: var(--google-btn-text);
+            border: 1px solid var(--google-btn-border);
+            font-weight: 600;
+        }
+
+        .google-btn:hover {
+            background-color: var(--google-btn-hover);
+            border-color: var(--accent-color);
+        }
+
+        .error-box {
+            background-color: var(--error-bg);
+            border: 1px solid var(--error-border);
+            color: var(--error-text);
+            padding: 1rem;
+            border-radius: 8px;
+            margin-bottom: 1.5rem;
+            font-size: 0.9rem;
+            text-align: left;
+            line-height: 1.5;
+            animation: fadeIn 0.3s ease-out;
+        }
+
+        .error-box strong {
+            display: block;
+            margin-bottom: 0.25rem;
+            font-weight: 700;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-5px); }
+            to { opacity: 1; transform: translateY(0); }
         }
     </style>
 </head>
 <body>
     <div class="login-container">
         <h1>Admin Access</h1>
+
+        <div id="authError" class="error-box" style="display: none;">
+            <strong>Access Denied</strong>
+            <span id="authErrorMessage"></span>
+        </div>
+        
+        <button onclick="window.location.href='/admin/google-login'" class="google-btn">
+            <svg width="18" height="18" viewBox="0 0 18 18"><path d="M17.64 9.2c0-.63-.06-1.25-.16-1.84H9v3.49h4.84c-.21 1.12-.84 2.07-1.79 2.7l2.91 2.26c1.7-1.57 2.68-3.88 2.68-6.61z" fill="#4285F4"/><path d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.91-2.26c-.8.54-1.83.86-3.05.86-2.34 0-4.32-1.58-5.03-3.7L1.05 13c1.49 2.96 4.54 5 8.1 5z" fill="#34A853"/><path d="M3.97 10.72c-.18-.54-.28-1.12-.28-1.72s.1-1.18.28-1.72L1.05 5.02C.38 6.22 0 7.57 0 9s.38 2.78 1.05 3.98l2.92-2.26z" fill="#FBBC05"/><path d="M9 3.58c1.32 0 2.5.45 3.44 1.35L15 2.47C13.47.97 11.43 0 9 0 5.44 0 2.39 2.04.9 5.02l2.92 2.26c.71-2.12 2.69-3.7 5.18-3.7z" fill="#EA4335"/></svg>
+            Sign in with Google
+        </button>
+
+        <div class="divider">or</div>
+
         <form id="loginForm">
-            <input type="password" id="adminToken" placeholder="Enter Admin Access Token" required>
-            <button type="submit">Login</button>
+            <input type="password" id="adminToken" placeholder="Legacy Access Token" required>
+            <button type="submit">Login with Token</button>
         </form>
         <p id="errorMessage" class="error" style="display:none;"></p>
     </div>
@@ -77,6 +240,23 @@
             } else {
                 errorMessage.textContent = 'Invalid token.';
                 errorMessage.style.display = 'block';
+            }
+        });
+
+        // Handle URL parameters for errors
+        window.addEventListener('DOMContentLoaded', () => {
+            const params = new URLSearchParams(window.location.search);
+            const error = params.get('error');
+            const email = params.get('email');
+            
+            if (error === 'unauthorized') {
+                const authError = document.getElementById('authError');
+                const authErrorMessage = document.getElementById('authErrorMessage');
+                authErrorMessage.textContent = `The account ${email || ''} is not authorized to access the admin dashboard. Please contact a super admin.`;
+                authError.style.display = 'block';
+                
+                // Clean up URL without refreshing
+                window.history.replaceState({}, document.title, window.location.pathname);
             }
         });
     </script>

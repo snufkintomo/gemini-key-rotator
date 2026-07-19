@@ -2,6 +2,7 @@ import type { ChatCompletionCreateParams } from 'openai/resources/chat/completio
 import { fetchAndEncodeMedia } from './media';
 import { getGeminiModelForOpenAI } from './models';
 import { parseStream, parseStreamFlush } from './streams';
+import { stripMetaSchema } from './schema';
 
 const API_VERSION = 'v1beta';
 
@@ -18,6 +19,21 @@ export function generateId(): string {
 	const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
 	const randomChar = () => characters[Math.floor(Math.random() * characters.length)];
 	return Array.from({ length: 29 }, randomChar).join('');
+}
+
+export function arrayBufferToBase64(buffer: ArrayBuffer): string {
+	const bytes = new Uint8Array(buffer);
+	let binary = '';
+	const len = bytes.byteLength;
+	// Process in chunks of 8000 to avoid stack overflow in String.fromCharCode
+	const chunk = 8000;
+	for (let i = 0; i < len; i += chunk) {
+		const subarr = bytes.subarray(i, i + chunk);
+		// Convert to standard array to ensure String.fromCharCode.apply works reliably on all engines
+		const normalArr = Array.from(subarr);
+		binary += String.fromCharCode.apply(null, normalArr);
+	}
+	return btoa(binary);
 }
 
 export function transformConfig(req: any) {
@@ -46,8 +62,7 @@ export function transformConfig(req: any) {
 		switch (req.response_format.type) {
 			case 'json_schema':
 				if (req.response_format.json_schema?.schema) {
-					const { additionalProperties, $schema, ...rest } = req.response_format.json_schema.schema;
-					cfg.responseSchema = rest;
+					cfg.responseSchema = stripMetaSchema(req.response_format.json_schema.schema);
 				}
 				if (cfg.responseSchema && 'enum' in cfg.responseSchema) {
 					cfg.responseMimeType = 'text/x.enum';
@@ -79,25 +94,40 @@ export function transformConfig(req: any) {
 
 export async function transformOpenAIMsgToGeminiParts(message: any) {
 	const parts = [];
-	const { content, tool_calls, tool_call_id } = message;
+	const { content, tool_calls, tool_call_id, reasoning_content } = message;
+
+	if (reasoning_content) {
+		parts.push({ thought: true, text: reasoning_content });
+	}
 
 	if (tool_calls && Array.isArray(tool_calls)) {
 		for (const tool_call of tool_calls) {
 			if (tool_call.type === 'function') {
-				parts.push({
-					functionCall: {
-						name: tool_call.function.name,
-						args: JSON.parse(tool_call.function.arguments),
-					},
-				});
+				const functionCall: any = {
+					name: tool_call.function.name,
+					args: JSON.parse(tool_call.function.arguments),
+				};
+				// We do not pass thought_signature to Google Gemini's standard API as it results in a 400 Bad Request
+				parts.push({ functionCall });
 			}
 		}
 	}
 
 	if (tool_call_id) {
+		let name = message.name || tool_call_id;
+
+		// If tool_call_id contains encoded signature, extract the original name
+		if (tool_call_id && tool_call_id.includes('_TSIG_')) {
+			const idParts = tool_call_id.split('_TSIG_');
+			// If name wasn't provided or was the encoded ID, use the part before TSIG
+			if (!message.name || message.name === tool_call_id) {
+				name = idParts[0];
+			}
+		}
+
 		parts.push({
 			functionResponse: {
-				name: message.name || tool_call_id,
+				name: name,
 				response: { content: content },
 			},
 		});
@@ -153,37 +183,46 @@ export async function transformOpenAIMessagesToGeminiContents(messages: ChatComp
 
 		switch (item.role) {
 			case 'user':
+			case 'tool':
 				roleToUse = 'user';
 				break;
 			case 'assistant':
-			case 'tool':
 				roleToUse = 'model';
 				break;
 			default:
 				throw new HttpError(`Unknown message role: "${item.role}"`, 400);
 		}
+		// Gemini requires functionResponse parts to be in a user role message.
+		if (parts.some((p: any) => p.functionResponse)) {
+			roleToUse = 'user';
+		}
 		contents.push({ role: roleToUse, parts });
 	}
+
+	// Merge consecutive same-role messages
+	const mergedContents: any[] = [];
+	for (const content of contents) {
+		if (mergedContents.length > 0 && mergedContents[mergedContents.length - 1].role === content.role) {
+			mergedContents[mergedContents.length - 1].parts.push(...content.parts);
+		} else {
+			mergedContents.push(content);
+		}
+	}
+
+	// Ensure conversation starts with a user message
+	if (mergedContents.length > 0 && mergedContents[0].role === 'model') {
+		mergedContents.unshift({
+			role: 'user',
+			parts: [{ text: '...' }]
+		});
+	}
+
 	return {
 		system_instruction: system_instruction_parts.length > 0 ? { parts: system_instruction_parts } : undefined,
-		contents,
+		contents: mergedContents,
 	};
 }
 
-function cleanSchema(schema: any): any {
-	if (!schema || typeof schema !== 'object') return schema;
-	const { $schema, additionalProperties, ...rest } = schema;
-	const newSchema: any = rest;
-	if (newSchema.properties) {
-		for (const key in newSchema.properties) {
-			newSchema.properties[key] = cleanSchema(newSchema.properties[key]);
-		}
-	}
-	if (newSchema.items) {
-		newSchema.items = cleanSchema(newSchema.items);
-	}
-	return newSchema;
-}
 
 export function transformTools(req: any) {
 	let tools, tool_config;
@@ -196,7 +235,7 @@ export function transformTools(req: any) {
 						const { strict, ...fnRest } = tool.function;
 						return {
 							...fnRest,
-							parameters: fnRest.parameters ? cleanSchema(fnRest.parameters) : undefined,
+							parameters: fnRest.parameters ? stripMetaSchema(fnRest.parameters) : undefined,
 						};
 					}),
 				},
@@ -222,8 +261,15 @@ export async function transformOpenAIToGeminiRequest(req: any) {
 export function processCompletionsResponse(data: any, model: string, id: string) {
 	const reasonsMap: Record<string, string> = { STOP: 'stop', MAX_TOKENS: 'length', SAFETY: 'content_filter', RECITATION: 'content_filter' };
 	const transformCandidatesMessage = (cand: any) => {
-		const message = { role: 'assistant', content: [] as string[], reasoning_content: '' as string };
+		const message: any = { role: 'assistant', content: [] as string[], reasoning_content: '' as string };
+		const tool_calls: any[] = [];
+		let currentThoughtSignature: string | undefined;
+
 		for (const part of cand.content?.parts ?? []) {
+			// Capture thought signature if available in any part
+			if (part.thoughtSignature) currentThoughtSignature = part.thoughtSignature;
+			if (part.functionCall?.thought_signature) currentThoughtSignature = part.functionCall.thought_signature;
+
 			if (part.text) {
 				if (
 					(part as any).thought === true ||
@@ -247,6 +293,22 @@ export function processCompletionsResponse(data: any, model: string, id: string)
 			} else if ((part as any).toolCode && typeof (part as any).toolCode === 'string') {
 				message.reasoning_content += (part as any).toolCode;
 			}
+
+			if (part.functionCall) {
+				let callId = `call_${generateId()}`;
+				if (currentThoughtSignature) {
+					// Encode signature in ID: call_ID_TSIG_signature
+					callId += `_TSIG_${currentThoughtSignature}`;
+				}
+				tool_calls.push({
+					id: callId,
+					type: 'function',
+					function: {
+						name: part.functionCall.name,
+						arguments: JSON.stringify(part.functionCall.args),
+					},
+				});
+			}
 		}
 		const finalMessage: any = {
 			...message,
@@ -257,6 +319,7 @@ export function processCompletionsResponse(data: any, model: string, id: string)
 					? null
 					: '',
 		};
+		if (tool_calls.length > 0) finalMessage.tool_calls = tool_calls;
 		if (!finalMessage.reasoning_content) delete finalMessage.reasoning_content;
 		return {
 			index: cand.index || 0,
@@ -265,7 +328,18 @@ export function processCompletionsResponse(data: any, model: string, id: string)
 			finish_reason: reasonsMap[cand.finishReason] || cand.finishReason,
 		};
 	};
-	const obj = { id, choices: data.candidates.map(transformCandidatesMessage), created: Math.floor(Date.now() / 1000), model: data.modelVersion ?? model, object: 'chat.completion', usage: data.usageMetadata && { completion_tokens: data.usageMetadata.candidatesTokenCount, prompt_tokens: data.usageMetadata.promptTokenCount, total_tokens: data.usageMetadata.totalTokenCount } };
+	const obj = { 
+		id, 
+		choices: data.candidates.map(transformCandidatesMessage), 
+		created: Math.floor(Date.now() / 1000), 
+		model: data.modelVersion ?? model, 
+		object: 'chat.completion', 
+		usage: data.usageMetadata && { 
+			completion_tokens: (data.usageMetadata.candidatesTokenCount || 0) + (data.usageMetadata.thoughtsTokenCount || 0), 
+			prompt_tokens: data.usageMetadata.promptTokenCount, 
+			total_tokens: data.usageMetadata.totalTokenCount 
+		} 
+	};
 	return JSON.stringify(obj);
 }
 
@@ -295,7 +369,20 @@ export function toOpenAIStream(this: any, line: any, controller: any) {
 			let currentFullReasoning = '';
 			let toolCalls: any[] = [];
 
+			// Track thought signature in this candidate's parts
+			if (!this.shared.thoughtSignatures) this.shared.thoughtSignatures = {};
+			let currentThoughtSignature = this.shared.thoughtSignatures[index];
+
 			for (const part of parts) {
+				if ((part as any).thoughtSignature) {
+					currentThoughtSignature = (part as any).thoughtSignature;
+					this.shared.thoughtSignatures[index] = currentThoughtSignature;
+				}
+				if (part.functionCall?.thought_signature) {
+					currentThoughtSignature = part.functionCall.thought_signature;
+					this.shared.thoughtSignatures[index] = currentThoughtSignature;
+				}
+
 				// Handle thinking/reasoning parts
 				let thinkingChunk = '';
 				if ((part as any).thought === true || ((part as any).thought && typeof (part as any).thought === 'string')) {
@@ -311,9 +398,13 @@ export function toOpenAIStream(this: any, line: any, controller: any) {
 				} else if (part.text) {
 					currentFullText += part.text;
 				} else if (part.functionCall) {
+					let callId = `call_${generateId()}`;
+					if (currentThoughtSignature) {
+						callId += `_TSIG_${currentThoughtSignature}`;
+					}
 					toolCalls.push({
 						index: toolCalls.length,
-						id: `call_${generateId()}`,
+						id: callId,
 						type: 'function',
 						function: {
 							name: part.functionCall.name,
@@ -383,9 +474,234 @@ export async function handleOpenAI(
     model?: string,
     handleGemini?: (request: Request, apiKey: string, model?: string) => Promise<Response>,
     handleModels?: (apiKey: string, modelId: string | undefined, authMode: string, model?: string) => Promise<Response>,
-    handleEmbeddings?: (req: any, apiKey: string, resolvedModel?: string) => Promise<Response>
+    handleEmbeddings?: (req: any, apiKey: string, resolvedModel?: string) => Promise<Response>,
+    request?: Request,
+    storeImage?: (id: string, base64Bytes: string) => Promise<void>
 ): Promise<Response> {
     const id = 'chatcmpl-' + generateId();
+
+	if (pathname.endsWith('/audio/transcriptions')) {
+		if (method !== 'POST') throw new HttpError('Method not allowed', 405);
+		if (!request) throw new HttpError('Original request is required for form-data parsing', 400);
+
+		try {
+			const formData = await request.clone().formData();
+			const file = formData.get('file') as File;
+			if (!file) throw new HttpError('Missing "file" parameter in audio transcription request', 400);
+
+			const modelName = 'gemini-1.5-flash'; // High-efficiency model for audio transcriptions
+
+			// Read file to ArrayBuffer and convert to Base64 safely
+			const arrayBuffer = await file.arrayBuffer();
+			const base64Data = arrayBufferToBase64(arrayBuffer);
+			const mimeType = file.type || 'audio/mp3';
+
+			// Construct Gemini payload
+			const geminiPayload = {
+				contents: [
+					{
+						parts: [
+							{
+								inlineData: {
+									mimeType: mimeType,
+									data: base64Data
+								}
+							},
+							{
+								text: 'Transcribe this audio file accurately. Return only the transcription text, nothing else.'
+							}
+						]
+					}
+				],
+				systemInstruction: {
+					parts: [
+						{
+							text: 'You are an expert audio transcriber. Your task is to transcribe the provided audio accurately. Output ONLY the verbatim transcription of the speech in the audio. Do not include any introductory remarks, descriptions of sounds, explanations, commentary, or markdown formatting.'
+						}
+					]
+				}
+			};
+
+			const geminiUrl = new URL(`https://localhost/${API_VERSION}/models/${modelName}:generateContent`);
+			const geminiRequest = new Request(geminiUrl.toString(), {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(geminiPayload),
+			});
+
+			const response = await handleGemini!(geminiRequest, apiKey);
+			if (!response.ok) return response;
+
+			const resJson: any = await response.json();
+			const transcriptionText = resJson.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+			return new Response(JSON.stringify({
+				text: transcriptionText.trim()
+			}), {
+				status: response.status,
+				headers: { 'Content-Type': 'application/json' }
+			});
+
+		} catch (e: any) {
+			throw new HttpError(`Audio transcription failed: ${e.message}`, 500);
+		}
+	}
+
+	if (pathname.endsWith('/images/generations')) {
+		if (method !== 'POST') throw new HttpError('Method not allowed', 405);
+		
+		const geminiModel = 'imagen-3.0-generate-002'; // Stable Imagen model
+
+		// Map OpenAI size to Gemini's aspectRatio
+		let aspectRatio = '1:1';
+		const size = reqBody.size || '1024x1024';
+		if (size === '1792x1024' || size === '16:9') {
+			aspectRatio = '16:9';
+		} else if (size === '1024x1792' || size === '9:16') {
+			aspectRatio = '9:16';
+		} else if (size === '4:3' || size === '1024x768') {
+			aspectRatio = '4:3';
+		} else if (size === '3:4' || size === '768x1024') {
+			aspectRatio = '3:4';
+		}
+
+		// Construct Gemini Imagen request payload
+		const imagenPayload = {
+			prompt: reqBody.prompt,
+			numberOfImages: reqBody.n || 1,
+			outputMimeType: 'image/jpeg',
+			aspectRatio: aspectRatio,
+			personGeneration: 'ALLOW_ADULT'
+		};
+
+		// For Imagen, we call generateImages
+		const geminiUrl = new URL(`https://localhost/${API_VERSION}/models/${geminiModel}:generateImages`);
+		const geminiRequest = new Request(geminiUrl.toString(), {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(imagenPayload),
+		});
+
+		const response = await handleGemini!(geminiRequest, apiKey);
+		if (!response.ok) return response;
+
+		const resJson: any = await response.json();
+		
+		// Translate back to OpenAI DALL-E format
+		const openAIData = (resJson.generatedImages || []).map((imgObj: any) => {
+			if (reqBody.response_format === 'b64_json') {
+				return {
+					b64_json: imgObj.image?.imageBytes || ''
+				};
+			} else {
+				if (storeImage && request && imgObj.image?.imageBytes) {
+					const imageId = generateId();
+					const requestUrl = new URL(request.url);
+					const token = request.headers.get('X-Access-Token') || '';
+					
+					// Store image asynchronously
+					storeImage(imageId, imgObj.image.imageBytes);
+					
+					return {
+						url: `${requestUrl.origin}/api/images/retrieve?id=${imageId}&token=${encodeURIComponent(token)}`
+					};
+				}
+				return {
+					url: imgObj.image?.imageBytes ? `data:image/jpeg;base64,${imgObj.image.imageBytes}` : ''
+				};
+			}
+		});
+
+		return new Response(JSON.stringify({
+			created: Math.floor(Date.now() / 1000),
+			data: openAIData
+		}), {
+			status: response.status,
+			headers: { 'Content-Type': 'application/json' }
+		});
+	}
+
+	if (pathname.endsWith('/responses')) {
+		if (method !== 'POST') throw new HttpError('Method not allowed', 405);
+		
+		const DEFAULT_MODEL = 'gemini-2.0-flash'; // High-performance model that natively supports audio
+		let geminiModel = model || (typeof reqBody.model === 'string' ? getGeminiModelForOpenAI(reqBody.model) : DEFAULT_MODEL);
+		
+		const contents = await transformOpenAIResponsesInputToGeminiContents(reqBody.input || []);
+		
+		const harmCategory = ['HARM_CATEGORY_HATE_SPEECH', 'HARM_CATEGORY_SEXUALLY_EXPLICIT', 'HARM_CATEGORY_DANGEROUS_CONTENT', 'HARM_CATEGORY_HARASSMENT', 'HARM_CATEGORY_CIVIC_INTEGRITY'];
+		const safetySettings = harmCategory.map((category) => ({ category, threshold: 'BLOCK_NONE' }));
+
+		const generationConfig: any = transformConfig(reqBody);
+
+		// If client requested audio modality, instruct Gemini to output WAV audio
+		const isAudioRequested = Array.isArray(reqBody.modalities) && reqBody.modalities.includes('audio');
+		if (isAudioRequested) {
+			generationConfig.responseMimeType = 'audio/wav';
+		}
+
+		const body = {
+			contents,
+			safetySettings,
+			generationConfig
+		};
+
+		const TASK = reqBody.stream ? 'streamGenerateContent' : 'generateContent';
+		const geminiUrl = new URL(`https://localhost/${API_VERSION}/models/${geminiModel}:${TASK}`);
+		const geminiRequest = new Request(geminiUrl.toString(), {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(body),
+		});
+
+		const response = await handleGemini!(geminiRequest, apiKey);
+		if (!response.ok) return response;
+
+		if (reqBody.stream) {
+			const stream = response.body!
+				.pipeThrough(new TextDecoderStream())
+				.pipeThrough(new TransformStream({ transform: parseStream, flush: parseStreamFlush, buffer: '', shared: {} } as any))
+				.pipeThrough(new TransformStream({ 
+					start(controller: any) {
+						this.shared.keepAliveTimer = setInterval(() => {
+							controller.enqueue(': keep-alive\n\n');
+						}, 10000);
+					},
+					transform(chunk: any, controller: any) {
+						if (this.shared.keepAliveTimer) {
+							clearInterval(this.shared.keepAliveTimer);
+							this.shared.keepAliveTimer = null;
+						}
+						toOpenAIResponsesStream.call(this, chunk, controller);
+					},
+					flush(controller: any) {
+						if (this.shared.keepAliveTimer) {
+							clearInterval(this.shared.keepAliveTimer);
+						}
+						toOpenAIResponsesStreamFlush.call(this, controller);
+					},
+					model: geminiModel, 
+					id, 
+					shared: {} 
+				} as any))
+				.pipeThrough(new TextEncoderStream());
+				
+			return new Response(stream, {
+				headers: {
+					'Content-Type': 'text/event-stream',
+					'Cache-Control': 'no-cache',
+					'Connection': 'keep-alive',
+				}
+			});
+		} else {
+			const bodyText = await response.text();
+			const bodyJson = JSON.parse(bodyText);
+			return new Response(processResponsesResponse(bodyJson, geminiModel, id), {
+				status: response.status,
+				headers: { 'Content-Type': 'application/json' }
+			});
+		}
+	}
     
     if (pathname.endsWith('/chat/completions')) {
         if (method !== 'POST') throw new HttpError('Method not allowed', 405);
@@ -428,8 +744,24 @@ export async function handleOpenAI(
                 .pipeThrough(new TextDecoderStream())
                 .pipeThrough(new TransformStream({ transform: parseStream, flush: parseStreamFlush, buffer: '', shared: {} } as any))
                 .pipeThrough(new TransformStream({ 
-                    transform: toOpenAIStream, 
-                    flush: toOpenAIStreamFlush, 
+                    start(controller: any) {
+                        this.shared.keepAliveTimer = setInterval(() => {
+                            controller.enqueue(': keep-alive\n\n');
+                        }, 10000);
+                    },
+                    transform(chunk: any, controller: any) {
+                        if (this.shared.keepAliveTimer) {
+                            clearInterval(this.shared.keepAliveTimer);
+                            this.shared.keepAliveTimer = null;
+                        }
+                        toOpenAIStream.call(this, chunk, controller);
+					},
+                    flush(controller: any) {
+                        if (this.shared.keepAliveTimer) {
+                            clearInterval(this.shared.keepAliveTimer);
+                        }
+                        toOpenAIStreamFlush.call(this, controller);
+                    },
                     streamIncludeUsage: reqBody.stream_options?.include_usage, 
                     model: geminiModel, 
                     id, 
@@ -522,4 +854,228 @@ export async function handleEmbeddings(
 		});
 	}
 	return new Response(responseBody, response);
+}
+
+export async function transformOpenAIResponsesInputToGeminiContents(input: any[]) {
+	const contents: any[] = [];
+	for (const item of input) {
+		if (item.type !== 'message') continue;
+		
+		const parts: any[] = [];
+		const roleToUse = item.role === 'assistant' ? 'model' : 'user';
+
+		if (Array.isArray(item.content)) {
+			for (const part of item.content) {
+				if (part.type === 'text') {
+					parts.push({ text: part.text });
+				} else if (part.type === 'input_audio' && part.input_audio?.data) {
+					const format = part.input_audio.format || 'mp3';
+					parts.push({
+						inlineData: {
+							mimeType: format === 'mp3' ? 'audio/mpeg' : `audio/${format}`,
+							data: part.input_audio.data,
+						},
+					});
+				} else if (part.type === 'image' && part.image?.data) {
+					parts.push({
+						inlineData: {
+							mimeType: part.image.mimeType || 'image/jpeg',
+							data: part.image.data,
+						},
+					});
+				}
+			}
+		} else if (typeof item.content === 'string') {
+			parts.push({ text: item.content });
+		}
+
+		if (parts.length > 0) {
+			contents.push({ role: roleToUse, parts });
+		}
+	}
+
+	// Merge consecutive same-role messages
+	const mergedContents: any[] = [];
+	for (const content of contents) {
+		if (mergedContents.length > 0 && mergedContents[mergedContents.length - 1].role === content.role) {
+			mergedContents[mergedContents.length - 1].parts.push(...content.parts);
+		} else {
+			mergedContents.push(content);
+		}
+	}
+
+	// Ensure conversation starts with user role
+	if (mergedContents.length > 0 && mergedContents[0].role === 'model') {
+		mergedContents.unshift({
+			role: 'user',
+			parts: [{ text: '...' }]
+		});
+	}
+
+	return mergedContents;
+}
+
+export function processResponsesResponse(data: any, model: string, id: string): string {
+	const candidate = data.candidates?.[0];
+	const parts = candidate?.content?.parts || [];
+	const contentItems: any[] = [];
+
+	let textContent = '';
+	let audioData = '';
+
+	for (const part of parts) {
+		if (part.text) {
+			textContent += part.text;
+		}
+		if (part.inlineData && part.inlineData.mimeType?.startsWith('audio/')) {
+			audioData = part.inlineData.data;
+		}
+	}
+
+	if (textContent) {
+		contentItems.push({
+			type: 'text',
+			text: textContent
+		});
+	}
+
+	if (audioData) {
+		contentItems.push({
+			type: 'audio',
+			audio: {
+				id: 'aud_' + generateId(),
+				data: audioData,
+				expires_at: Math.floor(Date.now() / 1000) + 3600,
+				transcript: textContent
+			}
+		});
+	}
+
+	const obj = {
+		id: 'resp_' + generateId(),
+		object: 'response',
+		model: model,
+		status: 'completed',
+		output: [
+			{
+				id: 'msg_' + generateId(),
+				object: 'response.message',
+				role: 'assistant',
+				content: contentItems
+			}
+		],
+		usage: data.usageMetadata && {
+			total_tokens: data.usageMetadata.totalTokenCount,
+			input_tokens: data.usageMetadata.promptTokenCount,
+			output_tokens: (data.usageMetadata.candidatesTokenCount || 0) + (data.usageMetadata.thoughtsTokenCount || 0)
+		}
+	};
+
+	return JSON.stringify(obj);
+}
+
+export function toOpenAIResponsesStream(this: any, line: any, controller: any) {
+	const { candidates, usageMetadata } = line;
+	const respId = 'resp_' + this.id;
+	const msgId = 'msg_' + this.id;
+
+	if (usageMetadata) {
+		this.shared.usage = { 
+			total_tokens: usageMetadata.totalTokenCount,
+			input_tokens: usageMetadata.promptTokenCount,
+			output_tokens: (usageMetadata.candidatesTokenCount || 0) + (usageMetadata.thoughtsTokenCount || 0)
+		};
+	}
+
+	// First time initialization
+	if (!this.shared.initialized) {
+		// 1. response.created
+		controller.enqueue(`event: response.created\ndata: ${JSON.stringify({
+			response: { id: respId, object: 'response', status: 'in_progress', model: this.model }
+		})}\n\n`);
+
+		// 2. response.output_item.added
+		controller.enqueue(`event: response.output_item.added\ndata: ${JSON.stringify({
+			response_id: respId,
+			output_item: { id: msgId, object: 'response.message', role: 'assistant', content: [] }
+		})}\n\n`);
+
+		// 3. response.content_part.added
+		controller.enqueue(`event: response.content_part.added\ndata: ${JSON.stringify({
+			response_id: respId,
+			output_item_id: msgId,
+			content_part: { type: 'text', text: '' }
+		})}\n\n`);
+
+		this.shared.initialized = true;
+	}
+
+	if (candidates && candidates.length > 0) {
+		const parts = candidates[0].content?.parts || [];
+		let currentFullText = '';
+
+		for (const part of parts) {
+			if (part.text) {
+				currentFullText += part.text;
+			}
+		}
+
+		if (!this.shared.lastText) this.shared.lastText = '';
+		const lastText = this.shared.lastText;
+
+		const textDelta = currentFullText.startsWith(lastText) 
+			? currentFullText.substring(lastText.length) 
+			: currentFullText;
+
+		this.shared.lastText = currentFullText;
+
+		if (textDelta) {
+			// 4. response.content_part.delta
+			controller.enqueue(`event: response.content_part.delta\ndata: ${JSON.stringify({
+				response_id: respId,
+				output_item_id: msgId,
+				content_part_index: 0,
+				delta: { text: textDelta }
+			})}\n\n`);
+		}
+	}
+}
+
+export function toOpenAIResponsesStreamFlush(this: any, controller: any) {
+	const respId = 'resp_' + this.id;
+	const msgId = 'msg_' + this.id;
+	const finalText = this.shared.lastText || '';
+
+	// 5. response.content_part.done
+	controller.enqueue(`event: response.content_part.done\ndata: ${JSON.stringify({
+		response_id: respId,
+		output_item_id: msgId,
+		content_part_index: 0,
+		content_part: { type: 'text', text: finalText }
+	})}\n\n`);
+
+	// 6. response.output_item.done
+	controller.enqueue(`event: response.output_item.done\ndata: ${JSON.stringify({
+		response_id: respId,
+		output_item: {
+			id: msgId,
+			object: 'response.message',
+			status: 'completed',
+			role: 'assistant',
+			content: [
+				{ type: 'text', text: finalText }
+			]
+		}
+	})}\n\n`);
+
+	// 7. response.done
+	controller.enqueue(`event: response.done\ndata: ${JSON.stringify({
+		response: {
+			id: respId,
+			object: 'response',
+			status: 'completed',
+			model: this.model,
+			usage: this.shared.usage || { total_tokens: 0, input_tokens: 0, output_tokens: 0 }
+		}
+	})}\n\n`);
 }

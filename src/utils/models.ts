@@ -10,8 +10,11 @@ export function getGeminiModelForGemini(geminiModel: string): string {
 	//}
 	// If the model is not an old 2.5 version, use it directly
 	if (geminiModel === 'gemini-translate') {
-		return 'gemini-3.1-flash-lite-preview';
+		return 'gemini-3.1-flash-lite';
 	}
+	//if (geminiModel === 'gemini-3-flash-preview') {  //use for cline to map to gemini-3.5-flash
+	//	return 'gemini-3.5-flash';
+	//}
 	return geminiModel;
 }
 
@@ -24,11 +27,14 @@ export function getGeminiModelForClaude(claudeModel: string): string {
 	if (claudeModel.includes('opus')) {
 		return 'gemini-pro-latest';
 	}
-	if (claudeModel.includes('sonnet')) {
-		return 'gemini-flash-latest';
-	}
 	if (claudeModel.includes('haiku')) {
 		return 'gemini-flash-lite-latest';
+	}
+	if (claudeModel.includes('haiku-latest')) {
+		return 'gemini-flash-lite-latest';
+	}
+	if (claudeModel.includes('sonnet')) {
+		return 'gemini-flash-latest';
 	}
 	// Default to a general-purpose Gemini model if no specific mapping is found
 	return 'gemini-flash-latest';
@@ -125,7 +131,8 @@ export function mapModelForInternalApi(model: string): string {
 		'gemini-2.5-flash-image': 'gemini-2.5-flash',
 		'gemini-pro-latest': 'gemini-3.1-pro-preview',
 		'gemini-flash-latest': 'gemini-3-flash-preview',
-		'gemini-flash-lite-latest': 'gemini-3.1-flash-lite-preview',
+		'gemini-3.5-flash': 'gemini-3-flash-preview',  // gemini-cli no 3.5 flash
+		'gemini-flash-lite-latest': 'gemini-3.1-flash-lite',
 	};
 	return MODEL_FALLBACKS[model] || model;
 }

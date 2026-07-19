@@ -33,6 +33,16 @@ export class SystemContext {
 		return this.env.RESEND_API_KEY;
 	}
 
+	get upstreamTimeoutMs(): number {
+		if (this.env.UPSTREAM_TIMEOUT_MS) {
+			const parsed = parseInt(this.env.UPSTREAM_TIMEOUT_MS, 10);
+			if (!isNaN(parsed) && parsed > 0) {
+				return parsed;
+			}
+		}
+		return 100000; // default to 100 seconds (matching Cloudflare Workers & Google SDK defaults)
+	}
+
 	get cloudflareAIGatewayBase(): string {
 		return `https://gateway.ai.cloudflare.com/v1/${this.env.CLOUDFLARE_AI_GATEWAY_ID}/${this.env.CLOUDFLARE_AI_GATEWAY_NAME}`;
 	}

@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gemini Key Rotator - Admin</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16,2 A14,14 0 0,1 28,10 L25,12 A10,10 0 0,0 16,6 Z' fill='url(%23grad1)'/%3E%3Cpath d='M16,30 A14,14 0 0,1 4,22 L7,20 A10,10 0 0,0 16,26 Z' fill='url(%23grad1)'/%3E%3Cpath d='M16,8 Q16,16 8,16 Q16,16 16,24 Q16,16 24,16 Q16,16 16,8' fill='url(%23grad2)'/%3E%3Cdefs%3E%3ClinearGradient id='grad1' x1='0%25' y1='0%25' x2='100%25' y2='100%25'%3E%3Cstop offset='0%25' stop-color='%2338bdf8'/%3E%3Cstop offset='100%25' stop-color='%23818cf8'/%3E%3C/linearGradient%3E%3ClinearGradient id='grad2' x1='0%25' y1='0%25' x2='100%25' y2='100%25'%3E%3Cstop offset='0%25' stop-color='%23a78bfa'/%3E%3Cstop offset='100%25' stop-color='%23f472b6'/%3E%3C/linearGradient%3E%3C/defs%3E%3C/svg%3E">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- INJECT_CSS -->
+</head>
+<body>
+    <div class="container">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+            <h1 style="margin: 0;">Gemini Key Rotator</h1>
+            <div id="current-admin-info" style="font-size: 0.85rem; color: var(--text-secondary); text-align: right;">
+                <span id="admin-email">Loading...</span>
+                <br>
+                <a href="/admin/logout" style="color: var(--accent-color); text-decoration: none;">Logout</a>
+            </div>
+        </div>
+
+        <div class="tab-buttons">
+            <button class="tab-button" data-tab="credentials-tab">API Keys</button>
+            <button class="tab-button" data-tab="oauth-tab">OAuth Credentials</button>
+            <button class="tab-button" data-tab="logs-tab">API Logs</button>
+            <button class="tab-button" data-tab="stats-tab">Statistics</button>
+            <button class="tab-button" data-tab="trends-tab">Trends</button>
+            <button class="tab-button" id="admins-tab-btn" data-tab="admins-tab" style="display: none;">Admins</button>
+        </div>
+
+        <!-- API Keys Tab -->
+        <div id="credentials-tab" class="tab-content">
+            <h2>Create or Update API Key Credentials</h2>
+            <p>Provide your desired Access Token and the corresponding Gemini API keys. If the token already exists, its keys will be updated.</p>
+
+            <form id="keyForm">
+                <label for="accessTokenSelect">Access Token:</label><br>
+                <div style="display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 0.5rem;">
+                    <select id="accessTokenSelect" style="width: 100%;">
+                        <option value="">-- Loading... --</option>
+                    </select>
+                    <input type="text" id="accessToken" name="accessToken" required placeholder="Custom Access Token (at least 10 chars)" style="display: none; width: 100%;">
+                </div>
+                <div style="margin-bottom: 1.5rem; display: flex; flex-wrap: wrap; gap: 1.5rem;">
+                    <label style="display: inline-flex; align-items: center; gap: 0.5rem; font-weight: 500; cursor: pointer; user-select: none;">
+                        <input type="checkbox" id="enableLogging" style="width: auto; margin: 0;"> 
+                        Enable API Logging
+                    </label>
+                    <label style="display: inline-flex; align-items: center; gap: 0.5rem; font-weight: 500; cursor: pointer; user-select: none;">
+                        <input type="checkbox" id="enablePruning" style="width: auto; margin: 0;"> 
+                        Enable Prompt Pruning
+                    </label>
+                </div>
+                <label for="apiKeys">API Keys:</label><br>
+                <textarea id="apiKeys" name="apiKeys" required placeholder="AIzaSy...&#10;AIzaSy...&#10;AIzaSy..."></textarea>
+                <br><br>
+                <div class="button-group">
+                    <button type="submit">Save Credentials</button>
+                    <button type="button" id="deleteButton">Delete</button>
+                </div>
+            </form>
+
+            <div id="result"></div>
+
+            <!-- Key Health Section for API Keys -->
+            <div id="api-key-health" class="key-status-container" style="display: none;">
+                <h3>Current Key Health</h3>
+                <div id="api-key-status-list" class="key-status-list"></div>
+            </div>
+        </div>
+
+        <!-- OAuth Credentials Tab -->
+        <div id="oauth-tab" class="tab-content">
+            <h2>Manage OAuth Credentials</h2>
+            <p>Set up OAuth credentials for Gemini CLI and Antigravity. You can either manually paste a credential string or use the "Connect Google Account" flow.</p>
+
+            <form id="oauthForm">
+                <label for="oauthAccessTokenSelect">Access Token:</label><br>
+                <div style="display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 0.5rem;">
+                    <select id="oauthAccessTokenSelect" style="width: 100%;">
+                        <option value="">-- Loading... --</option>
+                    </select>
+                    <input type="text" id="oauthAccessToken" name="oauthAccessToken" required placeholder="Custom Access Token (at least 10 chars)" style="display: none; width: 100%;">
+                </div>
+                <div style="margin-bottom: 1.5rem; display: flex; flex-wrap: wrap; gap: 1.5rem;">
+                    <label style="display: inline-flex; align-items: center; gap: 0.5rem; font-weight: 500; cursor: pointer; user-select: none;">
+                        <input type="checkbox" id="oauthEnableLogging" style="width: auto; margin: 0;"> 
+                        Enable API Logging
+                    </label>
+                    <label style="display: inline-flex; align-items: center; gap: 0.5rem; font-weight: 500; cursor: pointer; user-select: none;">
+                        <input type="checkbox" id="oauthEnablePruning" style="width: auto; margin: 0;"> 
+                        Enable Prompt Pruning
+                    </label>
+                </div>
+                
+                <div style="background: var(--code-bg); padding: 1.5rem; border-radius: 8px; border: 1px solid var(--border-color); margin-bottom: 1.5rem;">
+                    <h3 style="margin-top: 0;">Connect Google Account</h3>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                        <div>
+                            <label for="clientId">Client ID:</label>
+                            <input type="text" id="clientId" placeholder="Google OAuth Client ID">
+                        </div>
+                        <div>
+                            <label for="clientSecret">Client Secret:</label>
+                            <input type="text" id="clientSecret" placeholder="Google OAuth Client Secret">
+                        </div>
+                    </div>
+                    <button type="button" id="connectGoogleBtn" style="background-color: #4285F4;">Connect Google Account</button>
+                    <p style="font-size: 0.85rem; color: #718096; margin-top: 0.5rem;">This will open a popup. If the redirect fails (localhost:8085), <strong>copy the full URL</strong> from the address bar and paste it below.</p>
+                    
+                    <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #e2e8f0;">
+                        <label for="manualCode">Manual Callback URL or Code:</label>
+                        <div style="display: flex; gap: 0.5rem;">
+                            <input type="text" id="manualCode" placeholder="Paste localhost URL or code here">
+                            <button type="button" id="manualExchangeBtn" style="width: auto; white-space: nowrap;">Exchange</button>
+                        </div>
+                    </div>
+                </div>
+
+                <label for="oauthCredentials">OAuth Credentials (One per line):</label>
+                <textarea id="oauthCredentials" name="oauthCredentials" required placeholder="client_id:client_secret:refresh_token:project_id"></textarea>
+                <br><br>
+                <div class="button-group">
+                    <button type="submit">Save All OAuth Credentials</button>
+                    <button type="button" id="oauthDeleteButton">Clear All OAuth</button>
+                </div>
+            </form>
+
+            <div id="oauthResult"></div>
+
+            <!-- Key Health Section for OAuth -->
+            <div id="oauth-key-health" class="key-status-container" style="display: none;">
+                <h3>Current Credential Health</h3>
+                <div id="oauth-key-status-list" class="key-status-list"></div>
+            </div>
+        </div>
+
+        <!-- Statistics Tab -->
+        <div id="stats-tab" class="tab-content">
+            <h2>API Usage Statistics</h2>
+            <p>Track the daily usage, success rate, and rate limits (429) for each API Key and OAuth Credential.</p>
+
+            <div class="button-group" style="margin-bottom: 1rem; display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
+                <button id="loadStatsBtn">Load Statistics</button>
+                <button id="clearStatsBtn" style="background-color: var(--danger-color);">Clear Statistics</button>
+                <label id="statsSuperAdminToggleLabel" style="display: none; align-items: center; gap: 0.5rem; font-weight: 500; cursor: pointer; user-select: none;">
+                    <input type="checkbox" id="statsShowAllToggle" style="width: auto; margin: 0;"> Show All Admins' Data
+                </label>
+            </div>
+
+            <div id="statsFilterArea" style="display: none; background: var(--code-bg); padding: 1rem; border-radius: 8px; border: 1px solid var(--border-color); margin-bottom: 1rem;">
+                <div style="display: flex; gap: 1rem; flex-wrap: wrap; align-items: flex-end;">
+                    <div style="flex: 1; min-width: 200px;">
+                        <label for="statsSearch" style="font-size: 0.85rem;">Search User or Model:</label>
+                        <input type="text" id="statsSearch" placeholder="Search..." style="padding: 8px; font-size: 0.9rem;">
+                    </div>
+                    <div style="width: 150px;">
+                        <label for="statsDateFilter" style="font-size: 0.85rem;">Date Range:</label>
+                        <select id="statsDateFilter" style="width: 100%; padding: 8px; border-radius: 8px; border: 1px solid var(--border-color);">
+                            <option value="all">All Time</option>
+                            <option value="today" selected>Today</option>
+                            <option value="7d">Last 7 Days</option>
+                            <option value="30d">Last 30 Days</option>
+                        </select>
+                    </div>
+                    <button id="downloadCsvBtn" style="background-color: #48bb78; flex-grow: 0; width: auto; font-size: 0.9rem;">Export CSV</button>
+                </div>
+            </div>
+
+            <div id="statsSummary" class="summary-cards" style="display: none;">
+                <div class="summary-card">
+                    <h4>Total Requests</h4>
+                    <div id="sumTotalRequests" class="value">0</div>
+                </div>
+                <div class="summary-card">
+                    <h4>Success Rate</h4>
+                    <div id="sumSuccessRate" class="value">0%</div>
+                </div>
+                <div id="cardErrors429" class="summary-card clickable">
+                    <h4>429 Errors</h4>
+                    <div id="sumErrors429" class="value">0</div>
+                </div>
+                <div id="cardZeroSuccess" class="summary-card clickable">
+                    <h4>0% Success Keys</h4>
+                    <div id="sumZeroSuccess" class="value">0</div>
+                </div>
+                <div class="summary-card" style="display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 1rem 0.5rem;">
+                    <h4>Processed Tokens</h4>
+                    <div style="display: flex; gap: 0.5rem; align-items: center; justify-content: center; width: 100%; margin-top: 0.25rem;">
+                        <div style="flex: 1; text-align: center;">
+                            <div id="sumPromptTokensCard" class="value" style="font-size: 1.3rem; font-weight: 700; line-height: 1.2; color: var(--text-primary);">0</div>
+                            <div style="font-size: 0.72rem; color: var(--text-secondary); margin-top: 2px; font-weight: 500; white-space: nowrap;">📩 Prompt</div>
+                        </div>
+                        <div style="border-left: 1px solid var(--border-color); height: 26px; opacity: 0.6;"></div>
+                        <div style="flex: 1; text-align: center;">
+                            <div id="sumCompletionTokensCard" class="value" style="font-size: 1.3rem; font-weight: 700; line-height: 1.2; color: var(--text-primary);">0</div>
+                            <div style="font-size: 0.72rem; color: var(--text-secondary); margin-top: 2px; font-weight: 500; white-space: nowrap;">📤 Completion</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="summary-card savings-highlight" style="display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 1rem 0.5rem;">
+                    <h4>Saved Tokens</h4>
+                    <div style="display: flex; gap: 0.5rem; align-items: center; justify-content: center; width: 100%; margin-top: 0.25rem;">
+                        <div style="flex: 1; text-align: center;">
+                            <div id="sumCachedTokensCard" class="value savings-val-cache" style="font-size: 1.3rem; font-weight: 700; line-height: 1.2;">0</div>
+                            <div style="font-size: 0.72rem; color: var(--text-secondary); margin-top: 2px; font-weight: 500; white-space: nowrap;">⚡️ Cached</div>
+                        </div>
+                        <div style="border-left: 1px solid var(--border-color); height: 26px; opacity: 0.6;"></div>
+                        <div style="flex: 1; text-align: center;">
+                            <div id="sumPrunedTokensCard" class="value savings-val-pruned" style="font-size: 1.3rem; font-weight: 700; line-height: 1.2;">0</div>
+                            <div style="font-size: 0.72rem; color: var(--text-secondary); margin-top: 2px; font-weight: 500; white-space: nowrap;">✨ Pruned</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="statsDimensionButtons" style="display: none; margin-bottom: 2rem; display: flex; gap: 0.5rem; justify-content: center; border-top: 1px solid var(--border-color); padding-top: 1rem;">
+                <button class="dim-tab-btn dimension-btn active" data-dim="by-key" style="font-size: 0.9rem; padding: 8px 16px;">By Key</button>
+                <button class="dim-tab-btn dimension-btn" data-dim="by-user" style="font-size: 0.9rem; padding: 8px 16px;">By User</button>
+                <button class="dim-tab-btn dimension-btn" data-dim="by-model" style="font-size: 0.9rem; padding: 8px 16px;">By Model</button>
+            </div>
+
+            <div id="statsContainer" style="display: none;">
+                <!-- By Key Section -->
+                <div id="stats-by-key" class="stats-dimension-content">
+                    <h3>Standard API Keys Usage <span id="apiKeyCount" class="table-count"></span></h3>
+                <div style="overflow-x: auto; margin-bottom: 2rem;">
+                    <table class="stats-table" style="width: 100%; border-collapse: collapse; margin-bottom: 1rem;">
+                        <thead>
+                            <tr style="background-color: var(--code-bg);">
+                                <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">API Key</th>
+                                <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Mode</th>
+                                <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">Model</th>
+                                <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Requests</th>
+                                <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Success Rate</th>
+                                <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">429 Errors</th>
+                                <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Prompt / Completion</th>
+                                <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Cached / Pruned</th>
+                                <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="apiKeyStatsBody"></tbody>
+                    </table>
+                </div>
+
+                    <h3>OAuth Credentials Usage <span id="oauthCount" class="table-count"></span></h3>
+                    <div style="overflow-x: auto;">
+                        <table class="stats-table" style="width: 100%; border-collapse: collapse;">
+                            <thead>
+                                <tr style="background-color: var(--code-bg);">
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">OAuth Credential</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Mode</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">Model</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Requests</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Success Rate</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">429 Errors</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Prompt / Completion</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Cached / Pruned</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="oauthStatsBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- By User Section -->
+                <div id="stats-by-user" class="stats-dimension-content" style="display: none;">
+                    <h3>Standard API Key Usage by User <span id="userApiKeyCount" class="table-count"></span></h3>
+                    <div style="overflow-x: auto; margin-bottom: 2rem;">
+                        <table class="stats-table" style="width: 100%; border-collapse: collapse;">
+                            <thead>
+                                <tr style="background-color: var(--code-bg);">
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">User Access Token</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">Date</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Mode</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">Model</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Requests</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Success Rate</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">429 Errors</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Prompt / Completion</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Cached / Pruned</th>
+                                </tr>
+                            </thead>
+                            <tbody id="userApiStatsBody"></tbody>
+                        </table>
+                    </div>
+
+                    <h3>OAuth Credential Usage by User <span id="userOauthCount" class="table-count"></span></h3>
+                    <div style="overflow-x: auto;">
+                        <table class="stats-table" style="width: 100%; border-collapse: collapse;">
+                            <thead>
+                                <tr style="background-color: var(--code-bg);">
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">User Access Token</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">Date</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Mode</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">Model</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Requests</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Success Rate</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">429 Errors</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Prompt / Completion</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Cached / Pruned</th>
+                                </tr>
+                            </thead>
+                            <tbody id="userOauthStatsBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- By Model Section -->
+                <div id="stats-by-model" class="stats-dimension-content" style="display: none;">
+                    <h3>Standard API Key Usage by Model <span id="modelApiKeyCount" class="table-count"></span></h3>
+                    <div style="overflow-x: auto; margin-bottom: 2rem;">
+                        <table class="stats-table" style="width: 100%; border-collapse: collapse;">
+                            <thead>
+                                <tr style="background-color: var(--code-bg);">
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">Model Name</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">Date</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Mode</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Requests</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Success Rate</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">429 Errors</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Prompt / Completion</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Cached / Pruned</th>
+                                </tr>
+                            </thead>
+                            <tbody id="modelApiStatsBody"></tbody>
+                        </table>
+                    </div>
+
+                    <h3>OAuth Credential Usage by Model <span id="modelOauthCount" class="table-count"></span></h3>
+                    <div style="overflow-x: auto;">
+                        <table class="stats-table" style="width: 100%; border-collapse: collapse;">
+                            <thead>
+                                <tr style="background-color: var(--code-bg);">
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">Model Name</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">Date</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Mode</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Requests</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Success Rate</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">429 Errors</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Prompt / Completion</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Cached / Pruned</th>
+                                </tr>
+                            </thead>
+                            <tbody id="modelOauthStatsBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Trends Tab -->
+        <div id="trends-tab" class="tab-content">
+            <h2>Usage Trends</h2>
+            <p>Visual representation of request volume and success rates over the last 30 days.</p>
+            
+            <div id="trendsSuperAdminToggleArea" style="display: none; margin-bottom: 1rem;">
+                <label style="display: inline-flex; align-items: center; gap: 0.5rem; font-weight: 500; cursor: pointer; user-select: none;">
+                    <input type="checkbox" id="trendsShowAllToggle" style="width: auto; margin: 0;"> Show All Admins' Data
+                </label>
+            </div>
+            
+            <div style="background: var(--card-background); padding: 1.5rem; border-radius: 8px; border: 1px solid var(--border-color); margin-bottom: 2rem;">
+                <canvas id="requestsChart" height="200"></canvas>
+            </div>
+
+            <div style="background: var(--card-background); padding: 1.5rem; border-radius: 8px; border: 1px solid var(--border-color);">
+                <canvas id="errorsChart" height="200"></canvas>
+            </div>
+        </div>
+
+        <!-- Logs Tab -->
+        <div id="logs-tab" class="tab-content">
+            <h2>API Logs</h2>
+            <p>Monitor all API requests and responses. Click "Load Logs" to fetch recent entries.</p>
+
+            <div class="button-group" style="margin-bottom: 1.5rem; display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
+                <button id="loadLogsBtn">Load Logs</button>
+                <button id="refreshLogsBtn" style="display: none;">Refresh</button>
+                <select id="logsLimit" style="width: auto; padding: 0.5rem 1rem;">
+                    <option value="10">10</option>
+                    <option value="50" selected>50</option>
+                    <option value="100">100</option>
+                </select>
+                <label for="logsLimit">entries per page</label>
+                <button id="clearAllLogsBtn" style="display: none; background-color: var(--danger-color); color: white;">Clear All Logs</button>
+                <label id="logsSuperAdminToggleLabel" style="display: none; align-items: center; gap: 0.5rem; font-weight: 500; cursor: pointer; user-select: none;">
+                    <input type="checkbox" id="logsShowAllToggle" style="width: auto; margin: 0;"> Show All Admins' Logs
+                </label>
+            </div>
+
+            <div id="logsTableContainer" style="margin-top: 2rem; display: none;">
+                <table id="logsTable" border="1" style="width: 100%; border-collapse: collapse;">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Timestamp</th>
+                            <th>Method</th>
+                            <th>URL</th>
+                            <th>Status</th>
+                            <th>Duration (ms)</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="logsTableBody">
+                    </tbody>
+                </table>
+                <div style="margin-top: 1rem;">
+                    <button id="prevPageBtn" disabled>Previous</button>
+                    <span id="pageInfo"></span>
+                    <button id="nextPageBtn" disabled>Next</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Admins Tab (Super Admin only) -->
+        <div id="admins-tab" class="tab-content">
+            <h2>Admin Management</h2>
+            <p>Manage who can access this dashboard. Each admin manages their own credentials isolated by their account.</p>
+
+            <div style="background: var(--code-bg); padding: 1.5rem; border-radius: 8px; border: 1px solid var(--border-color); margin-bottom: 2rem;">
+                <h3 style="margin-top: 0;">Add New Admin</h3>
+                <form id="addAdminForm" style="display: flex; gap: 1rem; align-items: flex-end;">
+                    <div style="flex: 2;">
+                        <label for="newAdminEmail">Google Email:</label>
+                        <input type="text" id="newAdminEmail" placeholder="admin@example.com" required>
+                    </div>
+                    <div style="flex: 1;">
+                        <label for="newAdminRole">Role:</label>
+                        <select id="newAdminRole" style="width: 100%; padding: 11px; border-radius: 8px; border: 1px solid var(--border-color);">
+                            <option value="admin">Admin</option>
+                            <option value="super_admin">Super Admin</option>
+                        </select>
+                    </div>
+                    <button type="submit" style="flex: 0; width: auto; white-space: nowrap; height: 46px;">Add Admin</button>
+                </form>
+            </div>
+
+            <div id="adminsTableContainer">
+                <table style="width: 100%; border-collapse: collapse;">
+                    <thead>
+                        <tr style="background-color: var(--code-bg);">
+                            <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">Email</th>
+                            <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Role</th>
+                            <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="adminsTableBody">
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Modal for viewing log details -->
+        <div id="logDetailsModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); justify-content: center; align-items: center; z-index: 1000; backdrop-filter: blur(4px);">
+            <div class="modal-content">
+                <h3>Log Details</h3>
+                <pre id="logDetailsContent" style="margin-bottom: 1.5rem;"></pre>
+                <button id="closeModalBtn" style="width: auto; padding: 8px 16px;">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <button class="theme-toggle-btn" id="themeToggle" title="切換主題">🌓</button>
+    <!-- INJECT_JS -->
+</body>
+</html>
