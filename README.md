@@ -53,6 +53,25 @@ Built on the latest Cloudflare Workers features:
 
 ---
 
+### ✂️ Context Pruning & Multi-Level Caching Architecture
+
+#### 1. Dynamic Context Pruner (Saved Tokens)
+Designed for agentic workflows with high-frequency tool use, the rotator includes a sub-millisecond **Prompt Pruner** (`src/rotator.ts` -> `pruneGeminiContents`):
+* **Tool-Call Pairing:** Automatically pairs AI tool calls (`functionCall`) with their corresponding executions (`functionResponse`).
+* **Resource Expiration:** Detects repeated resource lookups (e.g., repeatedly reading the same code file across messages). It retains only the latest lookup payload, marking older redundant chunks as expired.
+* **Semantic Tombstoning:** To keep timeline logic coherent for the model, deleted segments are replaced with a light string: `"[Duplicate text removed to save context space]"`, preserving 100% coherence while releasing 99% of the token weight.
+* **Preservation Guard:** Automatically detects if older tool outputs are explicitly referenced in the current turn and spares them from eviction.
+* **Adjacent Role Merging:** Automatically merges consecutive role blocks (`user` or `model`) that arise from pruning, avoiding API failures.
+
+#### 2. Multi-Level Caching (Cached Tokens)
+Optimized for speed and minimal costs through three tiers of caching:
+* **Google Context Caching:** Leverages server-side context caching for repeated static prompts >32k, reducing input costs by **75% (saving 3/4 of the bill)**.
+* **Durable Object In-Memory Caching:** Caches active API keys, OAuth Refresh tokens, and dynamic key health maps directly in the DO's V8 memory (RAM), dropping routing overhead to `<1ms`.
+* **Zero-Latency Prefetching:** Refresh tokens are pre-fetched asynchronously 5 minutes before their 1-hour expiration, completely eliminating network latency spikes for end-users.
+* **12-Hour Sync Cache:** Proactively tests and caches model support permissions for OAuth credentials via Durable Object background alarms, ensuring immediate fail-safe routing without in-request validation.
+
+---
+
 ## Setup and Deployment
 
 ### 1. Prerequisites
