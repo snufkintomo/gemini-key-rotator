@@ -35,6 +35,10 @@ The project features a modular architecture with native compatibility layers for
 - **OAuth 2.0 Management:** Built-in flow for authorizing and exchanging Google Cloud credentials with PKCE support.
 - **Enhanced Statistics & Monitoring:** 
     - Real-time usage tracking by API Key, User Token, and Model.
+    - **Advanced Token Performance Metrics:**
+        - **Processed Tokens:** Sum of all input prompt tokens processed and output completion tokens generated.
+        - **Cached Tokens (⚡):** Tracks prompt tokens served via Google's Context Caching (saving up to 75% on prompt costs for long histories).
+        - **Saved Tokens (✨):** Displays the exact volume of input tokens saved by the rotator's built-in **Prompt Pruner**. The context manager dynamically trims redundant system instructions, duplicate history entries, and expired message buffers before sending payloads to Google.
     - Interactive summary cards for daily health checks.
     - Advanced filtering (Date Range, Search, 429 Errors).
     - CSV export for external analysis.
