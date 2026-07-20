@@ -127,4 +127,59 @@ describe('KeyRotator Architectural Optimizations & Performance Tests (TDD)', () 
         // Let's verify sync executes without throwing and finishes correctly.
         await expect(rotator.syncAvailableModelsForAllCredentials()).resolves.not.toThrow();
     });
+
+    it('should redact sensitive credentials from logged headers and URL query parameters in writeCombinedLog', async () => {
+        const { writeCombinedLog } = await import('./utils/logger');
+        
+        const reqHeaders = new Headers();
+        reqHeaders.set('Authorization', 'Bearer admin-token-secret');
+        reqHeaders.set('Cookie', 'session=abc123secretcookie');
+        reqHeaders.set('x-api-key', 'AIzaSySecretApiKey');
+        reqHeaders.set('X-Normal-Header', 'NormalValue');
+
+        const request = new Request('https://api.rotator.org/v1/models?key=AIzaSySecretApiKeyInUrl&other=public', {
+            method: 'POST',
+            headers: reqHeaders,
+            body: JSON.stringify({ prompt: 'hello' })
+        });
+
+        const response = new Response(JSON.stringify({ result: 'ok' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' }
+        });
+
+        const mockRun = vi.fn().mockResolvedValue({ meta: {} });
+        const mockBind = vi.fn().mockReturnValue({ run: mockRun });
+        const mockPrepare = vi.fn().mockReturnValue({ bind: mockBind });
+
+        const envWithMockDB = {
+            ...mockEnv,
+            DB: {
+                prepare: mockPrepare
+            }
+        } as any;
+
+        await writeCombinedLog(envWithMockDB, request, response, Date.now(), 'user-token');
+
+        // Verify D1 preparation and binding
+        expect(mockPrepare).toHaveBeenCalled();
+        const bindCallArgs = mockBind.mock.calls[0];
+
+        // Let's check bound values:
+        // bindCallArgs[0]: timestamp
+        // bindCallArgs[1]: access_token
+        // bindCallArgs[2]: request_method
+        // bindCallArgs[3]: request_url (url must be redacted)
+        // bindCallArgs[4]: request_headers (headers must be redacted)
+        
+        const redactedUrl = bindCallArgs[3];
+        expect(redactedUrl).toContain('key=%5BREDACTED%5D'); // urlencoded '[REDACTED]' or '[REDACTED]'
+        expect(redactedUrl).not.toContain('AIzaSySecretApiKeyInUrl');
+
+        const redactedHeaders = JSON.parse(bindCallArgs[4]);
+        expect(redactedHeaders['authorization']).toBe('[REDACTED]');
+        expect(redactedHeaders['cookie']).toBe('[REDACTED]');
+        expect(redactedHeaders['x-api-key']).toBe('[REDACTED]');
+        expect(redactedHeaders['x-normal-header']).toBe('NormalValue');
+    });
 });

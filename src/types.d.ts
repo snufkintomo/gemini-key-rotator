@@ -21,6 +21,8 @@ export interface ApiCredentials {
 	oauth_credentials?: string;
 	current_oauth_index?: number;
 	oauth_key_states?: string | null; // JSON string of KeyState[]
+	enable_logging?: number;
+	enable_pruning?: number | null;
 }
 
 export interface GeminiModel {

@@ -964,34 +964,12 @@ export default {
         return new Response("Unauthorized: Access token is required.", { status: 401 });
       }
 
-      // Initialize logging variables
-      let startTime: number = 0;
-      
-      // Get logging and pruning settings for this access token
-      let enableLogging = env.ENABLE_API_LOGGING === "true";
-      let enablePruning = true; // default to true
-      try {
-        const tokenMeta = await env.DB.prepare("SELECT enable_logging, enable_pruning FROM api_credentials WHERE access_token = ?").bind(accessToken).first<{enable_logging: number, enable_pruning: number | null}>();
-        if (tokenMeta) {
-          if (!enableLogging) {
-            enableLogging = tokenMeta.enable_logging === 1;
-          }
-          enablePruning = tokenMeta.enable_pruning !== 0; // default to true if null or 1, false only if exactly 0
-        }
-      } catch (e) {
-        console.error("Error reading token settings:", e);
-      }
-
-      if (enableLogging) {
-        startTime = Date.now();
-      }
-
       const id = env.KEY_ROTATOR.idFromName(accessToken);
       const stub = env.KEY_ROTATOR.get(id, { locationHint: 'wnam' });
 
       const forwardRequest = new Request(request.url, request);
       forwardRequest.headers.set("X-Access-Token", accessToken);
-      forwardRequest.headers.set("X-Enable-Pruning", enablePruning ? "true" : "false");
+      forwardRequest.headers.set("X-Original-Url", request.url);
       
       if (openAIMode) {
         forwardRequest.headers.set("X-Auth-Mode", "openai");
@@ -1002,11 +980,6 @@ export default {
       }
 
       const response = await stub.fetch(forwardRequest);
-
-      if (enableLogging) {
-        // Log the response (async, non-blocking, combined)
-        ctx.waitUntil(writeCombinedLog(env, request, response.clone(), startTime, accessToken));
-      }
 
       const resHeaders = new Headers(response.headers);
       const cors = getCorsHeaders(request);

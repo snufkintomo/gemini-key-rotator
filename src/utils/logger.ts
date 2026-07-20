@@ -1,12 +1,41 @@
 import type { Env } from '../index';
 import { sanitizeLogBody } from './sanitize';
 
+function sanitizeHeadersAndUrl(headers: Headers, url: string) {
+  const sensitiveHeaders = ['authorization', 'cookie', 'x-access-token', 'x-api-key', 'x-goog-api-key', 'x-rotator-token'];
+  const sanitizedHeaders: { [key: string]: string } = {};
+
+  for (const [key, value] of headers as any) {
+    const lowerKey = key.toLowerCase();
+    if (sensitiveHeaders.includes(lowerKey)) {
+      sanitizedHeaders[lowerKey] = '[REDACTED]';
+    } else {
+      sanitizedHeaders[lowerKey] = value;
+    }
+  }
+
+  let sanitizedUrl = url;
+  try {
+    const urlObj = new URL(url);
+    let changed = false;
+    const paramsToRedact = ['key', 'api_key', 'token', 'access_token'];
+    for (const param of paramsToRedact) {
+      if (urlObj.searchParams.has(param)) {
+        urlObj.searchParams.set(param, '[REDACTED]');
+        changed = true;
+      }
+    }
+    if (changed) {
+      sanitizedUrl = urlObj.toString();
+    }
+  } catch (e) {}
+
+  return { sanitizedHeaders, sanitizedUrl };
+}
+
 export async function logRequest(env: Env, request: Request, accessToken?: string) {
   const startTime = Date.now();
-  const headersObj: { [key: string]: string } = {};
-  for (const [key, value] of request.headers as any) {
-    headersObj[key] = value;
-  }
+  const { sanitizedHeaders, sanitizedUrl } = sanitizeHeadersAndUrl(request.headers, request.url);
 
   const rawBody = await request.clone().text();
   const sanitizedBody = sanitizeLogBody(rawBody);
@@ -15,8 +44,8 @@ export async function logRequest(env: Env, request: Request, accessToken?: strin
     timestamp: new Date().toISOString(),
     access_token: accessToken || null,
     request_method: request.method,
-    request_url: request.url,
-    request_headers: JSON.stringify(headersObj),
+    request_url: sanitizedUrl,
+    request_headers: JSON.stringify(sanitizedHeaders),
     request_body: sanitizedBody,
   };
 
@@ -47,14 +76,11 @@ export async function logResponse(env: Env, startTime: number, response: Respons
     responseBody = '<unable to read response>';
   }
 
-  const headersObj: { [key: string]: string } = {};
-  for (const [key, value] of response.headers as any) {
-    headersObj[key] = value;
-  }
+  const { sanitizedHeaders } = sanitizeHeadersAndUrl(response.headers, 'https://dummy.org');
 
   const logData = {
     response_status: response.status,
-    response_headers: JSON.stringify(headersObj),
+    response_headers: JSON.stringify(sanitizedHeaders),
     response_body: responseBody,
     duration_ms: duration,
   };
@@ -79,10 +105,7 @@ export async function writeCombinedLog(env: Env, request: Request, response: Res
     const duration = Date.now() - startTime;
 
     // 1. Request details
-    const reqHeadersObj: { [key: string]: string } = {};
-    for (const [key, value] of request.headers as any) {
-      reqHeadersObj[key] = value;
-    }
+    const { sanitizedHeaders, sanitizedUrl } = sanitizeHeadersAndUrl(request.headers, request.url);
     let sanitizedReqBody = '';
     try {
       const rawReqBody = await request.clone().text();
@@ -97,10 +120,7 @@ export async function writeCombinedLog(env: Env, request: Request, response: Res
     } catch (e) {
       responseBody = '<unable to read response>';
     }
-    const resHeadersObj: { [key: string]: string } = {};
-    for (const [key, value] of response.headers as any) {
-      resHeadersObj[key] = value;
-    }
+    const { sanitizedHeaders: sanitizedResHeaders } = sanitizeHeadersAndUrl(response.headers, 'https://dummy.org');
 
     // 3. Single Insert into D1
     const stmt = env.DB.prepare(`
@@ -115,11 +135,11 @@ export async function writeCombinedLog(env: Env, request: Request, response: Res
       timestamp,
       accessToken || null,
       request.method,
-      request.url,
-      JSON.stringify(reqHeadersObj),
+      sanitizedUrl,
+      JSON.stringify(sanitizedHeaders),
       sanitizedReqBody,
       response.status,
-      JSON.stringify(resHeadersObj),
+      JSON.stringify(sanitizedResHeaders),
       responseBody,
       duration
     ).run();

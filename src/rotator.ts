@@ -14,6 +14,7 @@ import { StorageHelper } from './utils/storage';
 import { getStandardRotationIndex, parseCredentials } from './utils/credentials';
 import { sendInvalidTokenEmail, sendExhaustedEmail } from './utils/email';
 import { getOAuthAccessToken, parseOAuthCredentials, discoverProjectId, saveDiscoveredProjectId, fetchAvailableModelsForToken } from './utils/oauth';
+import { writeCombinedLog } from './utils/logger';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -1244,6 +1245,7 @@ export class KeyRotator {
 	}
 
 	async fetch(request: Request): Promise<Response> {
+		const startTime = Date.now();
 		let savedTokensCount = 0;
 		const clonedRequest = request.clone();
 		const requestUrl = new URL(request.url);
@@ -1251,7 +1253,7 @@ export class KeyRotator {
 		const authMode = request.headers.get('X-Auth-Mode');
 		const protocol = authMode as Protocol;
 		const enablePruningHeader = request.headers.get('X-Enable-Pruning');
-		const enablePruning = enablePruningHeader !== 'false';
+		let enablePruning = true;
 
 		let cacheId: string | undefined;
 		let requestBodyJson: any = null;
@@ -1584,7 +1586,7 @@ export class KeyRotator {
 				this.ctx.state.waitUntil((async () => {
 					try {
 						const stmt = this.ctx.env.DB.prepare(
-							'SELECT api_keys, current_key_index, key_states, oauth_credentials, current_oauth_index, oauth_key_states FROM api_credentials WHERE access_token = ?'
+							'SELECT api_keys, current_key_index, key_states, oauth_credentials, current_oauth_index, oauth_key_states, enable_logging, enable_pruning FROM api_credentials WHERE access_token = ?'
 						);
 						const freshResult = await stmt.bind(userAccessToken).first<ApiCredentials>();
 						if (freshResult) {
@@ -1600,7 +1602,7 @@ export class KeyRotator {
 			}
 		} else {
 			const stmt = this.ctx.env.DB.prepare(
-				'SELECT api_keys, current_key_index, key_states, oauth_credentials, current_oauth_index, oauth_key_states FROM api_credentials WHERE access_token = ?'
+				'SELECT api_keys, current_key_index, key_states, oauth_credentials, current_oauth_index, oauth_key_states, enable_logging, enable_pruning FROM api_credentials WHERE access_token = ?'
 			);
 			dbResult = await stmt.bind(userAccessToken).first<ApiCredentials>();
 			if (dbResult) {
@@ -1611,6 +1613,12 @@ export class KeyRotator {
 
 		if (!dbResult) {
 			return createErrorResponse('Unauthorized: Invalid access token.', 401, protocol);
+		}
+
+		if (dbResult.enable_pruning !== undefined && dbResult.enable_pruning !== null) {
+			enablePruning = dbResult.enable_pruning === 1;
+		} else if (enablePruningHeader !== null) {
+			enablePruning = enablePruningHeader !== 'false';
 		}
 
 		const {
@@ -2262,6 +2270,13 @@ export class KeyRotator {
 				}
 			}
 			this.ctx.waitUntil(updatePromise);
+		}
+
+		// Fully delegated logging check inside Durable Object
+		if (dbResult && dbResult.enable_logging === 1) {
+			const originalUrl = request.headers.get("X-Original-Url") || request.url;
+			const logRequest = new Request(originalUrl, clonedRequest);
+			this.ctx.state.waitUntil(writeCombinedLog(this.ctx.env, logRequest, response.clone(), startTime, userAccessToken || undefined));
 		}
 
 		return response;
