@@ -72,3 +72,59 @@ export async function logResponse(env: Env, startTime: number, response: Respons
     logId
   ).run();
 }
+
+export async function writeCombinedLog(env: Env, request: Request, response: Response, startTime: number, accessToken?: string) {
+  try {
+    const timestamp = new Date(startTime).toISOString();
+    const duration = Date.now() - startTime;
+
+    // 1. Request details
+    const reqHeadersObj: { [key: string]: string } = {};
+    for (const [key, value] of request.headers as any) {
+      reqHeadersObj[key] = value;
+    }
+    let sanitizedReqBody = '';
+    try {
+      const rawReqBody = await request.clone().text();
+      sanitizedReqBody = sanitizeLogBody(rawReqBody);
+    } catch (e) {}
+
+    // 2. Response details
+    let responseBody: string;
+    try {
+      const rawResponseBody = await response.clone().text();
+      responseBody = sanitizeLogBody(rawResponseBody);
+    } catch (e) {
+      responseBody = '<unable to read response>';
+    }
+    const resHeadersObj: { [key: string]: string } = {};
+    for (const [key, value] of response.headers as any) {
+      resHeadersObj[key] = value;
+    }
+
+    // 3. Single Insert into D1
+    const stmt = env.DB.prepare(`
+      INSERT INTO api_logs (
+        timestamp, access_token, request_method, request_url, request_headers, request_body,
+        response_status, response_headers, response_body, duration_ms
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    await stmt.bind(
+      timestamp,
+      accessToken || null,
+      request.method,
+      request.url,
+      JSON.stringify(reqHeadersObj),
+      sanitizedReqBody,
+      response.status,
+      JSON.stringify(resHeadersObj),
+      responseBody,
+      duration
+    ).run();
+
+  } catch (e) {
+    console.error("Failed to write combined API log:", e);
+  }
+}

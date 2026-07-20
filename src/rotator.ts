@@ -47,6 +47,17 @@ export class KeyRotator {
 	private isPrefetching = false; // Lock flag to prevent redundant prefetching
 	private readonly PREFETCH_THRESHOLD = 300000; // 5 minutes (in ms) to prefetch before expiration
 	private sessionKeyMap = new Map<string, string>();
+	private inMemoryStats: any[] = [];
+
+	private setSessionKey(sessionId: string, apiKey: string) {
+		if (this.sessionKeyMap.size >= 2000) {
+			const oldestKey = this.sessionKeyMap.keys().next().value;
+			if (oldestKey !== undefined) {
+				this.sessionKeyMap.delete(oldestKey);
+			}
+		}
+		this.sessionKeyMap.set(sessionId, apiKey);
+	}
 
 	// In-memory index tracking for perfect round-robin under high load
 	private currentKeyIndex: number | undefined = undefined;
@@ -846,33 +857,34 @@ export class KeyRotator {
 	) {
 		if (!this.ctx.isUsageStatisticsEnabled) return;
 
-		// Read and update the pending stats in persistent Durable Object storage
-		// This guarantees stats survive DO evictions, restarts, and redeployments!
-		try {
-			const pending: any[] = (await this.storage.get<any[]>("pending_stats")) || [];
-			// Guarantee that ALL token metrics are 0 if the request failed
-			const actualPromptTokens = success ? promptTokens : 0;
-			const actualCompletionTokens = success ? completionTokens : 0;
-			const actualCachedTokens = success ? cachedTokens : 0;
-			const actualSavedTokens = success ? savedTokens : 0;
+		// 1. Thread-safe, non-blocking synchronous append to in-memory stats
+		const actualPromptTokens = success ? promptTokens : 0;
+		const actualCompletionTokens = success ? completionTokens : 0;
+		const actualCachedTokens = success ? cachedTokens : 0;
+		const actualSavedTokens = success ? savedTokens : 0;
 
-			pending.push({
-				rawKey,
-				keyType,
-				userToken,
-				success,
-				is429,
-				mode: mode || 'unknown',
-				model: model || 'unknown',
-				promptTokens: actualPromptTokens,
-				completionTokens: actualCompletionTokens,
-				cachedTokens: actualCachedTokens,
-				savedTokens: actualSavedTokens
-			});
-			await this.storage.put("pending_stats", pending);
-		} catch (e) {
-			console.error('Error writing usage stats to DO storage:', e);
-		}
+		this.inMemoryStats.push({
+			rawKey,
+			keyType,
+			userToken,
+			success,
+			is429,
+			mode: mode || 'unknown',
+			model: model || 'unknown',
+			promptTokens: actualPromptTokens,
+			completionTokens: actualCompletionTokens,
+			cachedTokens: actualCachedTokens,
+			savedTokens: actualSavedTokens
+		});
+
+		// 2. Persistent save to DO storage asynchronously in the background (no read-modify-write race!)
+		this.ctx.waitUntil((async () => {
+			try {
+				await this.storage.put("pending_stats", this.inMemoryStats);
+			} catch (e) {
+				console.error('Error writing usage stats to DO storage:', e);
+			}
+		})());
 
 		// Schedule alarm for 1 minute from now if not already scheduled
 		try {
@@ -888,18 +900,25 @@ export class KeyRotator {
 	}
 
 	async alarm() {
-		// 1. Read pending stats from persistent DO storage and flush them
-		let statsToFlush: any[] = [];
+		// 1. Read pending stats from in-memory and persistent DO storage and flush them
+		let statsToFlush = [...this.inMemoryStats];
 		let statsFlushed = false;
-		try {
-			statsToFlush = (await this.storage.get<any[]>("pending_stats")) || [];
-			if (statsToFlush.length > 0) {
-				// Delete immediately from DO storage to prevent double-processing
-				await this.storage.delete("pending_stats");
-				statsFlushed = true;
+
+		if (statsToFlush.length === 0) {
+			try {
+				statsToFlush = (await this.storage.get<any[]>("pending_stats")) || [];
+			} catch (e) {
+				console.error('Error reading pending stats from DO storage:', e);
 			}
+		}
+
+		// Clear memory and delete storage entry to prevent double-processing
+		this.inMemoryStats = [];
+		try {
+			await this.storage.delete("pending_stats");
+			statsFlushed = statsToFlush.length > 0;
 		} catch (e) {
-			console.error('Error reading/deleting pending stats from DO storage:', e);
+			console.error('Error deleting pending stats from DO storage:', e);
 		}
 
 		if (statsFlushed && statsToFlush.length > 0) {
@@ -1007,6 +1026,7 @@ export class KeyRotator {
 					try {
 						const currentPending = (await this.storage.get<any[]>("pending_stats")) || [];
 						await this.storage.put("pending_stats", [...statsToFlush, ...currentPending]);
+						this.inMemoryStats = [...statsToFlush, ...this.inMemoryStats];
 					} catch (storeError) {
 						console.error('Fatal: Failed to restore statistics to DO storage:', storeError);
 					}
@@ -1055,21 +1075,21 @@ export class KeyRotator {
 
 				let anyChange = false;
 
-				for (let i = 0; i < oauthParts.length; i++) {
+				const promises = oauthParts.map(async (part, i) => {
 					try {
-						const creds = parseOAuthCredentials(oauthParts[i], this.ctx.env.OAUTH_CLIENT_ID, this.ctx.env.OAUTH_CLIENT_SECRET);
-						if (!creds.refresh_token) continue;
+						const creds = parseOAuthCredentials(part, this.ctx.env.OAUTH_CLIENT_ID, this.ctx.env.OAUTH_CLIENT_SECRET);
+						if (!creds.refresh_token) return;
 
 						// 1. Get/Refresh OAuth Access Token
 						const activeAccessToken = await getOAuthAccessToken(this.ctx.state, creds, this.ctx);
-						if (!activeAccessToken) continue;
+						if (!activeAccessToken) return;
 
 						// 2. Discover project ID if not explicitly configured
 						let projectId = creds.project_id;
 						if (!projectId) {
 							projectId = await discoverProjectId(activeAccessToken, creds.email);
 						}
-						if (!projectId) continue;
+						if (!projectId) return;
 
 						// 3. Fetch supported models list from Google
 						const supportedModels = await fetchAvailableModelsForToken(activeAccessToken, projectId);
@@ -1082,7 +1102,7 @@ export class KeyRotator {
 								'gemini-3.5-flash'
 							];
 
-							const mu = updatedOauthKeyStates[i].modelUnavailable || {};
+							const mu = { ...(updatedOauthKeyStates[i].modelUnavailable || {}) };
 							let stateChanged = false;
 
 							// If a known model is NOT in Google's returned list, mark it as unavailable
@@ -1118,7 +1138,9 @@ export class KeyRotator {
 					} catch (err) {
 						console.error(`Error syncing models for OAuth credential at index ${i} in row ${id}:`, err);
 					}
-				}
+				});
+
+				await Promise.all(promises);
 
 				if (anyChange) {
 					await db.prepare('UPDATE api_credentials SET oauth_key_states = ? WHERE id = ?')
@@ -1745,9 +1767,9 @@ export class KeyRotator {
 			let timeoutMs = this.ctx.upstreamTimeoutMs;
 			if (isStreaming) {
 				if (attempt === 1) {
-					timeoutMs = 15000;
+					timeoutMs = 8000;
 				} else if (attempt === 2) {
-					timeoutMs = 40000;
+					timeoutMs = 20000;
 				}
 			}
 
@@ -2159,7 +2181,7 @@ export class KeyRotator {
 		let shouldSyncToDB = stateChanged;
 		if (response.ok) {
 			if (sessionId && apiKey) {
-				this.sessionKeyMap.set(sessionId, apiKey);
+				this.setSessionKey(sessionId, apiKey);
 			}
 
 			if (request.url.includes('/cachedContents')) {
@@ -2167,7 +2189,7 @@ export class KeyRotator {
 					try {
 						const resJson = await response.clone().json() as any;
 						if (resJson && resJson.name) {
-							this.sessionKeyMap.set(resJson.name, apiKey);
+							this.setSessionKey(resJson.name, apiKey);
 						}
 					} catch (e) {
 						// Ignore

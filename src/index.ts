@@ -6,7 +6,7 @@ import { KeyRotator } from './rotator';
 import { sanitizeLogBody } from './utils/sanitize';
 import { sendZeroSuccessRateAlertEmail } from './utils/email';
 import { generatePKCE, getDerivedKey, verifyLogin } from './utils/session';
-import { logRequest, logResponse } from './utils/logger';
+import { logRequest, logResponse, writeCombinedLog } from './utils/logger';
 import { discoverProjectId } from './utils/oauth';
 
 // --- Types ---
@@ -915,17 +915,11 @@ export default {
     // --- Main Proxy Logic ---
     if (request.method === 'OPTIONS') {
       const enableLogging = env.ENABLE_API_LOGGING === "true";
+      const response = handleOptions(request);
       if (enableLogging) {
-        // Log the OPTIONS request and its response
-        const result = await logRequest(env, request);
-        const startTime = result.startTime;
-        const logId = result.logId;
-        const response = handleOptions(request);
-        ctx.waitUntil(logResponse(env, startTime, response.clone(), logId));
-        return response;
-      } else {
-        return handleOptions(request);
+        ctx.waitUntil(writeCombinedLog(env, request, response.clone(), Date.now()));
       }
+      return response;
     }
 
     try {
@@ -972,7 +966,6 @@ export default {
 
       // Initialize logging variables
       let startTime: number = 0;
-      let logId: number | undefined;
       
       // Get logging and pruning settings for this access token
       let enableLogging = env.ENABLE_API_LOGGING === "true";
@@ -990,10 +983,7 @@ export default {
       }
 
       if (enableLogging) {
-        // Log the incoming request
-        const result = await logRequest(env, request, accessToken);
-        startTime = result.startTime;
-        logId = result.logId;
+        startTime = Date.now();
       }
 
       const id = env.KEY_ROTATOR.idFromName(accessToken);
@@ -1013,9 +1003,9 @@ export default {
 
       const response = await stub.fetch(forwardRequest);
 
-      if (enableLogging && logId) {
-        // Log the response (async, non-blocking)
-        ctx.waitUntil(logResponse(env, startTime, response.clone(), logId));
+      if (enableLogging) {
+        // Log the response (async, non-blocking, combined)
+        ctx.waitUntil(writeCombinedLog(env, request, response.clone(), startTime, accessToken));
       }
 
       const resHeaders = new Headers(response.headers);
