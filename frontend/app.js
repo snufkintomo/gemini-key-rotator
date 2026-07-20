@@ -23,6 +23,16 @@
         const logDetailsContent = document.getElementById('logDetailsContent');
         const closeModalBtn = document.getElementById('closeModalBtn');
 
+        const modelsModal = document.getElementById('modelsModal');
+        const modelsModalContent = document.getElementById('modelsModalContent');
+        const closeModelsModalBtn = document.getElementById('closeModelsModalBtn');
+
+        if (closeModelsModalBtn) {
+            closeModelsModalBtn.addEventListener('click', () => {
+                if (modelsModal) modelsModal.style.display = 'none';
+            });
+        }
+
         let currentPage = 1;
         let totalPages = 0;
 
@@ -839,8 +849,13 @@
 
         // Modal accessibility (Escape key & Click outside)
         window.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape' && logDetailsModal && logDetailsModal.style.display === 'flex') {
-                logDetailsModal.style.display = 'none';
+            if (e.key === 'Escape') {
+                if (logDetailsModal && logDetailsModal.style.display === 'flex') {
+                    logDetailsModal.style.display = 'none';
+                }
+                if (modelsModal && modelsModal.style.display === 'flex') {
+                    modelsModal.style.display = 'none';
+                }
             }
         });
 
@@ -848,6 +863,14 @@
             logDetailsModal.addEventListener('click', (e) => {
                 if (e.target === logDetailsModal) {
                     logDetailsModal.style.display = 'none';
+                }
+            });
+        }
+
+        if (modelsModal) {
+            modelsModal.addEventListener('click', (e) => {
+                if (e.target === modelsModal) {
+                    modelsModal.style.display = 'none';
                 }
             });
         }
@@ -903,6 +926,49 @@
                 }
             } catch (e) {
                 alert('Diagnosis failed: ' + e.message);
+            } finally {
+                button.textContent = originalText;
+                button.disabled = false;
+            }
+        }
+
+        async function showModels(token, key, isOAuth, button) {
+            const modelsModal = document.getElementById('modelsModal');
+            const modelsModalContent = document.getElementById('modelsModalContent');
+            if (!modelsModal || !modelsModalContent) return;
+
+            const originalText = button.textContent;
+            button.textContent = 'Querying...';
+            button.disabled = true;
+
+            modelsModalContent.innerHTML = '<div style="color: var(--text-secondary);">Querying Google API for available models...</div>';
+            modelsModal.style.display = 'flex';
+
+            try {
+                const response = await fetch('/api/key-models', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({ key, isOAuth })
+                });
+                const data = await response.json();
+                
+                if (response.ok && data.models) {
+                    const models = data.models || [];
+                    if (models.length === 0) {
+                        modelsModalContent.innerHTML = '<div style="color: var(--danger-color);">No supported models returned. This key/credentials might have expired or has restricted permissions.</div>';
+                    } else {
+                        modelsModalContent.innerHTML = models.map(m => {
+                            return `<div style="padding: 6px 0; border-bottom: 1px solid var(--border-color); color: var(--success-color); display: flex; align-items: center; gap: 0.5rem;"><span>✔</span> <span>${m}</span></div>`;
+                        }).join('');
+                    }
+                } else {
+                    modelsModalContent.innerHTML = `<div style="color: var(--danger-color); font-weight: bold;">Query Failed:</div><div style="color: var(--text-secondary); margin-top: 4px;">${data.error || 'Connection failed'}</div>`;
+                }
+            } catch (e) {
+                modelsModalContent.innerHTML = `<div style="color: var(--danger-color); font-weight: bold;">Error querying models:</div><div style="color: var(--text-secondary); margin-top: 4px;">${e.message}</div>`;
             } finally {
                 button.textContent = originalText;
                 button.disabled = false;
@@ -1004,6 +1070,13 @@
                     diagnoseBtn.className = 'btn-secondary-outline';
                     diagnoseBtn.onclick = () => diagnoseKey(token, key, isOAuth, diagnoseBtn);
                     actionsDiv.appendChild(diagnoseBtn);
+
+                    // Add Models button to every key
+                    const modelsBtn = document.createElement('button');
+                    modelsBtn.textContent = 'Models';
+                    modelsBtn.className = 'btn-secondary-outline';
+                    modelsBtn.onclick = () => showModels(token, key, isOAuth, modelsBtn);
+                    actionsDiv.appendChild(modelsBtn);
 
                     if (isInvalid || exhaustedModels.length > 0) {
                         const resetBtn = document.createElement('button');

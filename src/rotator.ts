@@ -1500,6 +1500,47 @@ export class KeyRotator {
 			);
 		}
 
+		// Handle model query requests (Internal/Admin only)
+		if (requestUrl.pathname === '/admin/key-models' && request.method === 'POST') {
+			if (!userAccessToken) return createErrorResponse('Unauthorized', 401, protocol);
+
+			const { key, isOAuth } = (await request.json()) as { key: string; isOAuth: boolean };
+			if (!key) return createErrorResponse('Key is required', 400, protocol);
+
+			try {
+				if (isOAuth) {
+					const creds = parseOAuthCredentials(key, this.ctx.env.OAUTH_CLIENT_ID, this.ctx.env.OAUTH_CLIENT_SECRET);
+					if (!creds.refresh_token) {
+						return new Response(JSON.stringify({ error: 'Invalid OAuth credentials format' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+					}
+					const activeAccessToken = await getOAuthAccessToken(this.ctx.state, creds, this.ctx);
+					if (!activeAccessToken) {
+						return new Response(JSON.stringify({ error: 'Failed to refresh OAuth token' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+					}
+					let projectId = creds.project_id;
+					if (!projectId) {
+						projectId = await discoverProjectId(activeAccessToken, creds.email);
+					}
+					if (!projectId) {
+						return new Response(JSON.stringify({ error: 'Failed to discover Google Cloud Project ID' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+					}
+					const models = await fetchAvailableModelsForToken(activeAccessToken, projectId);
+					return new Response(JSON.stringify({ models }), { headers: { 'Content-Type': 'application/json' } });
+				} else {
+					// Fetch standard API Key models
+					const response = await fetch(`https://generativelanguage.googleapis.com/v1/models?key=${key}`);
+					if (!response.ok) {
+						return new Response(JSON.stringify({ error: `Google API Error: ${response.statusText}` }), { status: response.status, headers: { 'Content-Type': 'application/json' } });
+					}
+					const data = await response.json() as { models?: { name: string }[] };
+					const models = (data.models || []).map(m => m.name.replace('models/', ''));
+					return new Response(JSON.stringify({ models }), { headers: { 'Content-Type': 'application/json' } });
+				}
+			} catch (err: any) {
+				return new Response(JSON.stringify({ error: err.message || 'Unknown error occurred' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+			}
+		}
+
 		// Handle key health reset requests (Internal/Admin only)
 		if (requestUrl.pathname === '/admin/reset-key-health' && request.method === 'POST') {
 			if (!userAccessToken) return createErrorResponse('Unauthorized', 401, protocol);
