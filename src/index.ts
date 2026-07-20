@@ -811,7 +811,14 @@ export default {
 
           if (request.method === 'POST') {
             const body = await request.json<any>();
-            const accessToken = body.access_token || request.headers.get('X-Access-Token');
+            let accessToken = body.access_token || request.headers.get('X-Access-Token');
+
+            if (!accessToken) {
+              const authHeader = request.headers.get('Authorization');
+              if (authHeader && authHeader.startsWith('Bearer ')) {
+                accessToken = authHeader.replace('Bearer ', '').trim();
+              }
+            }
 
             if (!accessToken) {
               return jsonResponse({ error: 'Access token is required.' }, 400, headers);

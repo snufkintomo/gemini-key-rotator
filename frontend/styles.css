@@ -500,11 +500,11 @@
         }
 
         /* Modal styling */
-        #logDetailsModal {
+        #logDetailsModal, #modelsModal {
             transition: opacity 0.2s ease;
         }
 
-        #logDetailsModal .modal-content {
+        .modal-content {
             background: var(--card-background);
             padding: 2rem;
             border-radius: 12px;

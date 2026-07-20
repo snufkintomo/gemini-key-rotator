@@ -951,7 +951,7 @@
                         'Content-Type': 'application/json',
                         'Authorization': `Bearer ${token}`
                     },
-                    body: JSON.stringify({ key, isOAuth })
+                    body: JSON.stringify({ access_token: token, key, isOAuth })
                 });
                 const data = await response.json();
                 
