@@ -454,6 +454,8 @@ export function collectModelLabels(value: any, out: string[] = []): string[] {
 	if (typeof value === 'object') {
 		for (const [k, v] of Object.entries(value)) {
 			if (typeof k === 'string' && /model|id|name|label/i.test(k) && typeof v === 'string') {
+				// ADDED: debug logging to see what it's finding
+				// console.log(`Found candidate: ${v}`); 
 				if (/gemini|claude|gpt-oss/i.test(v)) out.push(v.trim());
 			}
 			collectModelLabels(v, out);
@@ -462,34 +464,32 @@ export function collectModelLabels(value: any, out: string[] = []): string[] {
 	return out;
 }
 
-export async function fetchAvailableModelsForToken(accessToken: string, projectId: string): Promise<string[]> {
-	const url = 'https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels';
-	const bodies = [{ project: projectId }, { cloudaicompanionProject: projectId }, {}];
-	
-	for (const body of bodies) {
-		try {
-			const res = await fetch(url, {
-				method: 'POST',
-				headers: {
-					Authorization: `Bearer ${accessToken}`,
-					'Content-Type': 'application/json',
-					'User-Agent': 'google-api-nodejs-client/9.15.1',
-					'X-Goog-Api-Client': 'google-api-nodejs-client/9.15.1',
-					'Client-Metadata': 'ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI',
-				},
-				body: JSON.stringify(body),
-			});
-			if (res.ok) {
-				const data = await res.json() as any;
-				if (data) {
-					const rawLabels = collectModelLabels(data);
-					const uniqueLabels = [...new Set(rawLabels)];
-					return uniqueLabels;
-				}
-			}
-		} catch (e) {
-			// Try next body shape
+export interface OAuthBucket {
+	modelId: string;
+	remainingAmount?: number;
+	[key: string]: any;
+}
+
+export async function fetchAvailableModelsForToken(accessToken: string, projectId: string): Promise<OAuthBucket[]> {
+	const url = `https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota`;
+	try {
+		const res = await fetch(url, {
+			method: 'POST',
+			headers: {
+				Authorization: `Bearer ${accessToken}`,
+				'Content-Type': 'application/json',
+				'User-Agent': 'google-api-nodejs-client/9.15.1',
+				'X-Goog-Api-Client': 'google-api-nodejs-client/9.15.1',
+				'Client-Metadata': 'ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI',
+			},
+			body: JSON.stringify({ project: projectId }),
+		});
+		if (res.ok) {
+			const data = await res.json() as any;
+			return data.buckets || [];
 		}
+	} catch (e) {
+		// ignore
 	}
 	return [];
 }

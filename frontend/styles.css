@@ -500,7 +500,7 @@
         }
 
         /* Modal styling */
-        #logDetailsModal, #modelsModal {
+        #systemModal {
             transition: opacity 0.2s ease;
         }
 

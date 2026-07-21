@@ -3,6 +3,7 @@ import {
 	handleModels,
 	parseRequestModel,
 	resolveModelAndAuthMode,
+	KNOWN_GEMINI_MODELS,
 } from './utils/models';
 import { handleOpenAI, handleEmbeddings } from './utils/openai';
 import { handleClaude } from './utils/claude';
@@ -1055,12 +1056,12 @@ export class KeyRotator {
 			const db = this.ctx.env.DB;
 			if (!db) return;
 
-			// Retrieve all active credentials rows
-			const allRows = await db.prepare('SELECT id, access_token, oauth_credentials, oauth_key_states FROM api_credentials').all();
+			// Retrieve all active credentials rows (use access_token as key instead of non-existent id column)
+			const allRows = await db.prepare('SELECT access_token, oauth_credentials, oauth_key_states FROM api_credentials').all();
 			const results = allRows.results || [];
 
 			for (const row of results) {
-				const id = row.id;
+				const access_token = row.access_token as string || '';
 				const oauth_credentials = row.oauth_credentials as string || '';
 				const oauth_key_states = JSON.parse(row.oauth_key_states || '[]') as any[];
 
@@ -1095,21 +1096,13 @@ export class KeyRotator {
 						// 3. Fetch supported models list from Google
 						const supportedModels = await fetchAvailableModelsForToken(activeAccessToken, projectId);
 						if (supportedModels.length > 0) {
-							// Determine which known models are NOT supported by this key
-							const knownModels = [
-								'gemini-1.5-flash', 'gemini-1.5-flash-8b', 'gemini-1.5-pro',
-								'gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-2.5-pro',
-								'gemini-3.1-pro', 'gemini-3.1-flash-lite', 'gemini-3-flash-preview',
-								'gemini-3.5-flash'
-							];
-
 							const mu = { ...(updatedOauthKeyStates[i].modelUnavailable || {}) };
 							let stateChanged = false;
 
 							// If a known model is NOT in Google's returned list, mark it as unavailable
-							for (const model of knownModels) {
-								const isSupported = supportedModels.some(label => {
-									const l = label.toLowerCase();
+							for (const model of KNOWN_GEMINI_MODELS) {
+								const isSupported = supportedModels.some(b => {
+									const l = (b.modelId || '').toLowerCase();
 									return l.includes(model.toLowerCase()) || 
 										(model === 'gemini-3-flash-preview' && l.includes('gemini-3-flash'));
 								});
@@ -1137,15 +1130,15 @@ export class KeyRotator {
 							}
 						}
 					} catch (err) {
-						console.error(`Error syncing models for OAuth credential at index ${i} in row ${id}:`, err);
+						console.error(`Error syncing models for OAuth credential at index ${i} in row ${access_token}:`, err);
 					}
 				});
 
 				await Promise.all(promises);
 
 				if (anyChange) {
-					await db.prepare('UPDATE api_credentials SET oauth_key_states = ? WHERE id = ?')
-						.bind(JSON.stringify(updatedOauthKeyStates), id)
+					await db.prepare('UPDATE api_credentials SET oauth_key_states = ? WHERE access_token = ?')
+						.bind(JSON.stringify(updatedOauthKeyStates), access_token)
 						.run();
 				}
 			}
@@ -1524,7 +1517,74 @@ export class KeyRotator {
 					if (!projectId) {
 						return new Response(JSON.stringify({ error: 'Failed to discover Google Cloud Project ID' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
 					}
-					const models = await fetchAvailableModelsForToken(activeAccessToken, projectId);
+
+					// Use the DRY-ed official helper to fetch model buckets
+					const buckets = await fetchAvailableModelsForToken(activeAccessToken, projectId);
+
+					// Force instant DB force-sync if buckets are successfully fetched
+					if (buckets.length > 0) {
+						const stmt = this.ctx.env.DB.prepare(
+							'SELECT oauth_credentials, oauth_key_states FROM api_credentials WHERE access_token = ?'
+						);
+						const dbResult = await stmt.bind(userAccessToken).first<any>();
+						if (dbResult) {
+							const oauth_credentials = dbResult.oauth_credentials as string || '';
+							const oauth_key_states = JSON.parse(dbResult.oauth_key_states || '[]') as any[];
+							const oauthParts = oauth_credentials.split(',').map(p => p.trim()).filter(p => p);
+							
+							const targetIndex = oauthParts.indexOf(key.trim());
+							if (targetIndex !== -1) {
+								let updatedOauthKeyStates = [...oauth_key_states];
+								while (updatedOauthKeyStates.length <= targetIndex) {
+									updatedOauthKeyStates.push({});
+								}
+
+								const mu = { ...(updatedOauthKeyStates[targetIndex].modelUnavailable || {}) };
+								let stateChanged = false;
+
+								for (const model of KNOWN_GEMINI_MODELS) {
+									const isSupported = buckets.some(b => {
+										const l = (b.modelId || '').toLowerCase();
+										return l.includes(model.toLowerCase()) || 
+											(model === 'gemini-3-flash-preview' && l.includes('gemini-3-flash'));
+									});
+
+									if (!isSupported) {
+										if (!mu[model]) {
+											mu[model] = true;
+											stateChanged = true;
+										}
+									} else {
+										if (mu[model]) {
+											delete mu[model];
+											stateChanged = true;
+										}
+									}
+								}
+
+								if (stateChanged) {
+									updatedOauthKeyStates[targetIndex] = {
+										...updatedOauthKeyStates[targetIndex],
+										modelUnavailable: mu,
+										lastModelSyncTime: Date.now()
+									};
+
+									await this.ctx.env.DB.prepare('UPDATE api_credentials SET oauth_key_states = ? WHERE access_token = ?')
+										.bind(JSON.stringify(updatedOauthKeyStates), userAccessToken)
+										.run();
+
+									// Clear local Durable Object memory cache to instantly apply the new states
+									this.cachedCredentials = null;
+								}
+							}
+						}
+					}
+
+					// Return models with remaining amounts formatted nicely for UI
+					const models = buckets
+						.filter((b: any) => b.modelId)
+						.map((b: any) => `${b.modelId} (Remaining: ${b.remainingAmount || 'unknown'})`);
+
 					return new Response(JSON.stringify({ models }), { headers: { 'Content-Type': 'application/json' } });
 				} else {
 					// Fetch standard API Key models

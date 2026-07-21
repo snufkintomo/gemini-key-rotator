@@ -1,4 +1,4 @@
-import { getOAuthAccessToken, discoverProjectId, parseOAuthCredentials, saveDiscoveredProjectId } from './oauth';
+import { getOAuthAccessToken, discoverProjectId, parseOAuthCredentials, saveDiscoveredProjectId, fetchAvailableModelsForToken } from './oauth';
 import { parseStream, parseStreamFlush } from './streams';
 import { getGeminiModelForGemini, mapModelForInternalApi } from './models';
 import type { OAuthCredentials } from '../types';
@@ -66,32 +66,10 @@ export async function handleGeminiCli(
 
 		// Handle OAuth Model List (via retrieveUserQuota)
 		if (requestUrl.pathname.includes('/oauth/models')) {
-			const url = `https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota`;
-			const headers = {
-				Authorization: `Bearer ${accessToken}`,
-				'Content-Type': 'application/json',
-				...CODE_ASSIST_HEADERS,
-			};
-
-			const body = {
-				project: projectId,
-			};
-
-			const response = await proxyRequest(
-				new Request(url, {
-					method: 'POST',
-					headers,
-					body: JSON.stringify(body),
-				} as any),
-				false,
-				accessToken
-			);
-
-			if (!response.ok) return response;
-
-			const data = await response.json() as any;
+			const buckets = await fetchAvailableModelsForToken(accessToken, projectId);
+			
 			// Transform to Gemini listModels format from buckets
-			const models = (data.buckets || [])
+			const models = buckets
 				.filter((b: any) => b.modelId)
 				.map((b: any) => ({
 					name: `models/${b.modelId}`,
@@ -101,7 +79,7 @@ export async function handleGeminiCli(
 					quota: b, // Extra information for debugging/advanced usage
 				}));
 
-			return new Response(JSON.stringify({ models, buckets: data.buckets || [] }), {
+			return new Response(JSON.stringify({ models, buckets }), {
 				status: 200,
 				headers: { 'Content-Type': 'application/json' }
 			});

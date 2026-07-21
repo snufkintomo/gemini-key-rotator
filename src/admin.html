@@ -512,7 +512,7 @@
         }
 
         /* Modal styling */
-        #logDetailsModal, #modelsModal {
+        #systemModal {
             transition: opacity 0.2s ease;
         }
 
@@ -1077,23 +1077,14 @@
             </div>
         </div>
 
-        <!-- Modal for viewing log details -->
-        <div id="logDetailsModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); justify-content: center; align-items: center; z-index: 1000; backdrop-filter: blur(4px);">
+        <!-- Universal System Modal -->
+        <div id="systemModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); justify-content: center; align-items: center; z-index: 1000; backdrop-filter: blur(4px);">
             <div class="modal-content">
-                <h3>Log Details</h3>
-                <pre id="logDetailsContent" style="margin-bottom: 1.5rem;"></pre>
-                <button id="closeModalBtn" style="width: auto; padding: 8px 16px;">Close</button>
-            </div>
-        </div>
-
-        <!-- Modal for viewing available models -->
-        <div id="modelsModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); justify-content: center; align-items: center; z-index: 1000; backdrop-filter: blur(4px);">
-            <div class="modal-content" style="max-width: 500px; width: 90%;">
-                <h3 style="margin-top: 0;">Supported Google Models</h3>
-                <div id="modelsModalContent" style="max-height: 300px; overflow-y: auto; background: var(--code-bg); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; margin-bottom: 1.5rem; text-align: left; font-family: monospace;">
+                <h3 style="margin-top: 0;" id="systemModalTitle">System Notification</h3>
+                <div id="systemModalContent" style="max-height: 500px; overflow-y: auto; background: var(--code-bg); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; margin-bottom: 1.5rem; text-align: left; font-family: monospace;">
                     Loading...
                 </div>
-                <button id="closeModelsModalBtn" style="width: auto; padding: 8px 16px;">Close</button>
+                <button id="closeSystemModalBtn" style="width: auto; padding: 8px 16px;">Close</button>
             </div>
         </div>
     </div>
@@ -1121,17 +1112,108 @@
         const prevPageBtn = document.getElementById('prevPageBtn');
         const nextPageBtn = document.getElementById('nextPageBtn');
         const pageInfo = document.getElementById('pageInfo');
-        const logDetailsModal = document.getElementById('logDetailsModal');
-        const logDetailsContent = document.getElementById('logDetailsContent');
-        const closeModalBtn = document.getElementById('closeModalBtn');
+        const systemModal = document.getElementById('systemModal');
+        const systemModalContent = document.getElementById('systemModalContent');
+        const closeSystemModalBtn = document.getElementById('closeSystemModalBtn');
 
-        const modelsModal = document.getElementById('modelsModal');
-        const modelsModalContent = document.getElementById('modelsModalContent');
-        const closeModelsModalBtn = document.getElementById('closeModelsModalBtn');
+        if (closeSystemModalBtn) {
+            closeSystemModalBtn.addEventListener('click', () => {
+                if (systemModal) systemModal.style.display = 'none';
+            });
+        }
 
-        if (closeModelsModalBtn) {
-            closeModelsModalBtn.addEventListener('click', () => {
-                if (modelsModal) modelsModal.style.display = 'none';
+        function escapeHtml(text) {
+            if (typeof text !== 'string') return text;
+            return text
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+        }
+
+        function showSystemModal(title, contentHtml) {
+            const systemModal = document.getElementById('systemModal');
+            const systemModalContent = document.getElementById('systemModalContent');
+            const titleEl = systemModal ? systemModal.querySelector('h3') : null;
+            if (!systemModal || !systemModalContent) return;
+
+            if (titleEl) {
+                titleEl.textContent = title;
+            }
+            systemModalContent.innerHTML = contentHtml;
+            systemModal.style.display = 'flex';
+        }
+
+        function showAlert(title, message, type = 'info') {
+            let contentHtml = '';
+            if (type === 'success') {
+                contentHtml = `<div style="color: var(--success-color); font-weight: bold; display: flex; align-items: center; gap: 0.5rem; font-size: 1.1rem; margin-bottom: 0.5rem;"><span>✔</span> <span>${title}</span></div>
+                               <div style="color: var(--text-primary);">${message}</div>`;
+            } else if (type === 'error') {
+                contentHtml = `<div style="color: var(--danger-color); font-weight: bold; display: flex; align-items: center; gap: 0.5rem; font-size: 1.1rem; margin-bottom: 0.5rem;"><span>✘</span> <span>${title}</span></div>
+                               <div style="color: var(--text-secondary);">${message}</div>`;
+            } else {
+                contentHtml = `<div style="color: var(--text-primary); font-weight: bold; font-size: 1.1rem; margin-bottom: 0.5rem;">${title}</div>
+                               <div style="color: var(--text-secondary);">${message}</div>`;
+            }
+            showSystemModal(title, contentHtml);
+        }
+
+        function showConfirm(title, message) {
+            return new Promise((resolve) => {
+                const systemModal = document.getElementById('systemModal');
+                const systemModalContent = document.getElementById('systemModalContent');
+                const titleEl = systemModal ? systemModal.querySelector('h3') : null;
+                if (!systemModal || !systemModalContent) {
+                    resolve(false);
+                    return;
+                }
+
+                if (titleEl) {
+                    titleEl.textContent = title;
+                }
+
+                systemModalContent.innerHTML = `
+                    <div style="color: var(--text-secondary); font-size: 1.05rem; margin-bottom: 1.5rem; text-align: left; line-height: 1.4;">
+                        ${message}
+                    </div>
+                    <div style="display: flex; gap: 0.75rem; justify-content: flex-end;">
+                        <button id="confirmCancelBtn" class="btn-secondary-outline" style="margin: 0; padding: 8px 16px;">Cancel</button>
+                        <button id="confirmOkBtn" class="btn-danger-outline" style="margin: 0; padding: 8px 16px; background-color: var(--danger-color); color: white;">Confirm</button>
+                    </div>
+                `;
+
+                const closeBtn = document.getElementById('closeSystemModalBtn');
+                if (closeBtn) closeBtn.style.display = 'none';
+
+                systemModal.style.display = 'flex';
+
+                const cleanupAndResolve = (val) => {
+                    systemModal.style.display = 'none';
+                    if (closeBtn) closeBtn.style.display = 'inline-block';
+                    resolve(val);
+                };
+
+                document.getElementById('confirmCancelBtn').addEventListener('click', () => cleanupAndResolve(false));
+                document.getElementById('confirmOkBtn').addEventListener('click', () => cleanupAndResolve(true));
+
+                // Optional: handle ESC and outside click as Cancel
+                const handleEsc = (e) => {
+                    if (e.key === 'Escape') {
+                        window.removeEventListener('keydown', handleEsc);
+                        cleanupAndResolve(false);
+                    }
+                };
+                window.addEventListener('keydown', handleEsc);
+
+                const handleOutsideClick = (e) => {
+                    if (e.target === systemModal) {
+                        systemModal.removeEventListener('click', handleOutsideClick);
+                        cleanupAndResolve(false);
+                    }
+                };
+                systemModal.addEventListener('click', handleOutsideClick);
             });
         }
 
@@ -1180,7 +1262,7 @@
                 clearAllLogsBtn.textContent = showAll ? "Clear All Admins' Logs" : 'Clear My Logs';
                 logsTableContainer.style.display = 'block';
             } catch (error) {
-                alert('Error loading logs: ' + error.message);
+                showAlert('Error', 'Error loading logs: ' + error.message, 'error');
             }
         }
 
@@ -1195,9 +1277,11 @@
                     <td>${log.request_url.substring(0, 50)}...</td>
                     <td>${log.response_status || 'Pending'}</td>
                     <td>${log.duration_ms || '-'}</td>
-                    <td>
-                        <button data-log-id="${log.id}" class="viewLogBtn">View</button>
-                        <button data-log-id="${log.id}" class="deleteLogBtn" style="background-color: var(--danger-color); color: white; margin-left: 0.5rem;">Delete</button>
+                    <td style="white-space: nowrap; text-align: center; vertical-align: middle;">
+                        <div style="display: inline-flex; gap: 0.5rem; justify-content: center; align-items: center;">
+                            <button data-log-id="${log.id}" class="viewLogBtn" style="margin: 0; padding: 4px 10px; font-size: 0.85rem;">View</button>
+                            <button data-log-id="${log.id}" class="deleteLogBtn" style="background-color: var(--danger-color); color: white; margin: 0; padding: 4px 10px; font-size: 0.85rem;">Delete</button>
+                        </div>
                     </td>
                 `;
                 logsTableBody.appendChild(row);
@@ -1228,30 +1312,29 @@
         function viewLogDetails(logId, logs) {
             const log = logs.find(l => l.id == logId);
             if (log) {
-                logDetailsContent.textContent = JSON.stringify(log, null, 2);
-                logDetailsModal.style.display = 'flex';
+                const jsonStr = JSON.stringify(log, null, 2);
+                const escapedJsonStr = escapeHtml(jsonStr);
+                const html = `<pre style="margin: 0; white-space: pre-wrap; font-family: monospace; font-size: 0.85rem; color: var(--text-primary); line-height: 1.4;">${escapedJsonStr}</pre>`;
+                showSystemModal('Log Details', html);
             }
         }
 
-        closeModalBtn.addEventListener('click', () => {
-            logDetailsModal.style.display = 'none';
-        });
-
         async function deleteLog(logId) {
-            if (!confirm(`Are you sure you want to delete log ID ${logId}?`)) return;
+            const confirmed = await showConfirm('Delete Log', `Are you sure you want to delete log ID ${logId}?`);
+            if (!confirmed) return;
             try {
                 const response = await fetch(`/api/logs/${logId}`, {
                     method: 'DELETE'
                 });
                 if (response.ok) {
-                    alert('Log deleted successfully');
+                    showAlert('Success', 'Log deleted successfully', 'success');
                     loadLogs(currentPage); // Refresh
                 } else {
                     const data = await response.json();
-                    alert('Error deleting log: ' + (data.message || data.error));
+                    showAlert('Error', 'Error deleting log: ' + (data.message || data.error), 'error');
                 }
             } catch (error) {
-                alert('Error deleting log: ' + error.message);
+                showAlert('Error', 'Error deleting log: ' + error.message, 'error');
             }
         }
 
@@ -1261,21 +1344,22 @@
             const confirmMsg = showAll 
                 ? `Are you sure you want to delete ALL logs for ALL admins? This action cannot be undone.`
                 : `Are you sure you want to delete ALL of your own logs? This action cannot be undone.`;
-            if (!confirm(confirmMsg)) return;
+            const confirmed = await showConfirm('Clear All Logs', confirmMsg);
+            if (!confirmed) return;
             try {
                 const response = await fetch(`/api/logs?show_all=${showAll}`, {
                     method: 'DELETE'
                 });
                 if (response.ok) {
                     const data = await response.json();
-                    alert(data.message + ' (' + data.deletedCount + ' logs cleared)');
+                    showAlert('Success', data.message + ' (' + data.deletedCount + ' logs cleared)', 'success');
                     loadLogs(1); // Reload from page 1 after clearing
                 } else {
                     const data = await response.json();
-                    alert('Error clearing logs: ' + (data.message || data.error));
+                    showAlert('Error', 'Error clearing logs: ' + (data.message || data.error), 'error');
                 }
             } catch (error) {
-                alert('Error clearing logs: ' + error.message);
+                showAlert('Error', 'Error clearing logs: ' + error.message, 'error');
             }
         }
 
@@ -1453,7 +1537,7 @@
                 statsFilterArea.style.display = 'block';
                 statsSummary.style.display = 'grid';
             } catch (error) {
-                alert('Error loading statistics: ' + error.message);
+                showAlert('Error', 'Error loading statistics: ' + error.message, 'error');
             }
         }
 
@@ -1857,15 +1941,16 @@
             const msg = showAll 
                 ? 'Are you sure you want to clear ALL usage statistics for ALL admins?' 
                 : 'Are you sure you want to clear YOUR usage statistics?';
-            if (!confirm(msg)) return;
+            const confirmed = await showConfirm('Clear Statistics', msg);
+            if (!confirmed) return;
             try {
                 const url = showAll ? '/api/statistics?all=true' : '/api/statistics';
                 const response = await fetch(url, { method: 'DELETE' });
                 if (!response.ok) throw new Error('Failed to clear statistics');
-                alert('Statistics cleared successfully');
+                showAlert('Success', 'Statistics cleared successfully', 'success');
                 loadStatistics();
             } catch (error) {
-                alert('Error clearing statistics: ' + error.message);
+                showAlert('Error', 'Error clearing statistics: ' + error.message, 'error');
             }
         }
         // Button state helpers for loading feedback
@@ -1952,27 +2037,16 @@
         // Modal accessibility (Escape key & Click outside)
         window.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') {
-                if (logDetailsModal && logDetailsModal.style.display === 'flex') {
-                    logDetailsModal.style.display = 'none';
-                }
-                if (modelsModal && modelsModal.style.display === 'flex') {
-                    modelsModal.style.display = 'none';
+                if (systemModal && systemModal.style.display === 'flex') {
+                    systemModal.style.display = 'none';
                 }
             }
         });
 
-        if (logDetailsModal) {
-            logDetailsModal.addEventListener('click', (e) => {
-                if (e.target === logDetailsModal) {
-                    logDetailsModal.style.display = 'none';
-                }
-            });
-        }
-
-        if (modelsModal) {
-            modelsModal.addEventListener('click', (e) => {
-                if (e.target === modelsModal) {
-                    modelsModal.style.display = 'none';
+        if (systemModal) {
+            systemModal.addEventListener('click', (e) => {
+                if (e.target === systemModal) {
+                    systemModal.style.display = 'none';
                 }
             });
         }
@@ -1983,7 +2057,8 @@
         const apiKeysTextarea = document.getElementById('apiKeys');
 
         async function resetKeyHealth(token, key, isOAuth) {
-            if (!confirm(`Reset health status for this ${isOAuth ? 'OAuth credential' : 'API key'}?`)) return;
+            const confirmed = await showConfirm('Reset Key Health', `Reset health status for this ${isOAuth ? 'OAuth credential' : 'API key'}?`);
+            if (!confirmed) return;
             try {
                 const response = await fetch('/api/reset-key-health', {
                     method: 'POST',
@@ -1992,12 +2067,13 @@
                 });
                 if (response.ok) {
                     updateKeyHealth(token, isOAuth ? 'oauth' : 'api');
+                    showAlert('Success', 'Key health status reset successfully!', 'success');
                 } else {
                     const data = await response.json();
-                    alert('Error: ' + (data.error || 'Failed to reset health'));
+                    showAlert('Reset Failed', data.error || 'Failed to reset health', 'error');
                 }
             } catch (e) {
-                alert('Error: ' + e.message);
+                showAlert('Error', e.message, 'error');
             }
         }
 
@@ -2005,6 +2081,8 @@
             const originalText = button.textContent;
             button.textContent = 'Testing...';
             button.disabled = true;
+
+            showSystemModal('Key Diagnostics', '<div style="color: var(--text-secondary);">Running diagnostics...</div>');
             
             try {
                 const response = await fetch('/api/key-diagnose', {
@@ -2015,19 +2093,23 @@
                 const data = await response.json();
                 
                 if (response.ok && data.success) {
-                    let msg = `Diagnosis Success!\n\nLatency: ${data.latency}ms\nStatus: ${data.status} (Healthy)`;
+                    let html = `<div style="color: var(--success-color); font-weight: bold; margin-bottom: 8px;">Diagnosis Success!</div>
+                                <div style="color: var(--text-secondary);">Latency: ${data.latency}ms<br>Status: ${data.status} (Healthy)</div>`;
                     if (data.greeting) {
                         const displayName = data.model ? data.model.replace(/^models\//, '') : 'Gemini 3.5 Flash';
-                        msg += `\n\n${displayName} Response:\n"${data.greeting}"`;
+                        html += `<div style="margin-top: 12px; padding: 8px; background: var(--code-bg); border-radius: 4px; font-family: monospace;">${displayName} Response:<br>"${data.greeting}"</div>`;
                     }
-                    alert(msg);
+                    showSystemModal('Key Diagnostics', html);
                     updateKeyHealth(token, isOAuth ? 'oauth' : 'api');
                 } else {
-                    alert(`Diagnosis Failed!\n\nStatus: ${data.status || 'Error'}\nDetails: ${data.error || 'Connection failed'}`);
+                    const html = `<div style="color: var(--danger-color); font-weight: bold;">Diagnosis Failed!</div>
+                                  <div style="color: var(--text-secondary); margin-top: 4px;">Status: ${data.status || 'Error'}</div>
+                                  <div style="color: var(--text-secondary); margin-top: 4px;">Details: ${data.error || 'Connection failed'}</div>`;
+                    showSystemModal('Diagnosis Failed', html);
                     updateKeyHealth(token, isOAuth ? 'oauth' : 'api');
                 }
             } catch (e) {
-                alert('Diagnosis failed: ' + e.message);
+                showSystemModal('Diagnosis Failed', `<div style="color: var(--danger-color); font-weight: bold;">Error:</div><div style="color: var(--text-secondary); margin-top: 4px;">${e.message}</div>`);
             } finally {
                 button.textContent = originalText;
                 button.disabled = false;
@@ -2035,16 +2117,11 @@
         }
 
         async function showModels(token, key, isOAuth, button) {
-            const modelsModal = document.getElementById('modelsModal');
-            const modelsModalContent = document.getElementById('modelsModalContent');
-            if (!modelsModal || !modelsModalContent) return;
-
             const originalText = button.textContent;
             button.textContent = 'Querying...';
             button.disabled = true;
 
-            modelsModalContent.innerHTML = '<div style="color: var(--text-secondary);">Querying Google API for available models...</div>';
-            modelsModal.style.display = 'flex';
+            showSystemModal('Supported Google Models', '<div style="color: var(--text-secondary);">Querying Google API for available models...</div>');
 
             try {
                 const response = await fetch('/api/key-models', {
@@ -2060,17 +2137,18 @@
                 if (response.ok && data.models) {
                     const models = data.models || [];
                     if (models.length === 0) {
-                        modelsModalContent.innerHTML = '<div style="color: var(--danger-color);">No supported models returned. This key/credentials might have expired or has restricted permissions.</div>';
+                        showSystemModal('Supported Google Models', `<div style="color: var(--danger-color);">No supported models found.${data.debug ? `<br><small>${data.debug}</small>` : ''}</div>`);
                     } else {
-                        modelsModalContent.innerHTML = models.map(m => {
+                        const html = models.map(m => {
                             return `<div style="padding: 6px 0; border-bottom: 1px solid var(--border-color); color: var(--success-color); display: flex; align-items: center; gap: 0.5rem;"><span>✔</span> <span>${m}</span></div>`;
                         }).join('');
+                        showSystemModal('Supported Google Models', html);
                     }
                 } else {
-                    modelsModalContent.innerHTML = `<div style="color: var(--danger-color); font-weight: bold;">Query Failed:</div><div style="color: var(--text-secondary); margin-top: 4px;">${data.error || 'Connection failed'}</div>`;
+                    showSystemModal('Query Failed', `<div style="color: var(--danger-color); font-weight: bold;">Query Failed:</div><div style="color: var(--text-secondary); margin-top: 4px;">${data.error || 'Connection failed'}</div>`);
                 }
             } catch (e) {
-                modelsModalContent.innerHTML = `<div style="color: var(--danger-color); font-weight: bold;">Error querying models:</div><div style="color: var(--text-secondary); margin-top: 4px;">${e.message}</div>`;
+                showSystemModal('Query Failed', `<div style="color: var(--danger-color); font-weight: bold;">Error querying models:</div><div style="color: var(--text-secondary); margin-top: 4px;">${e.message}</div>`);
             } finally {
                 button.textContent = originalText;
                 button.disabled = false;
@@ -2079,12 +2157,20 @@
 
         async function diagnoseKeyFromStats(token, key, isOAuth, model, button) {
             if (!token) {
-                alert('Diagnosis failed: Missing user access token for this key.');
+                showAlert('Diagnosis Failed', 'Missing user access token for this key.', 'error');
                 return;
             }
+            const modelsModal = document.getElementById('modelsModal');
+            const modelsModalContent = document.getElementById('modelsModalContent');
+            if (!modelsModal || !modelsModalContent) return;
+
             const originalText = button.textContent;
             button.textContent = 'Testing...';
             button.disabled = true;
+
+            const displayModel = model ? model.replace(/^models\//, '') : 'Default Model';
+            modelsModalContent.innerHTML = `<div style="color: var(--text-secondary);">Running diagnostics for model <strong>${displayModel}</strong>...</div>`;
+            modelsModal.style.display = 'flex';
             
             try {
                 const response = await fetch('/api/key-diagnose', {
@@ -2095,17 +2181,28 @@
                 const data = await response.json();
                 
                 if (response.ok && data.success) {
-                    let msg = `Diagnosis Success!\n\nModel Tested: ${model.replace(/^models\//, '')}\nLatency: ${data.latency}ms\nStatus: ${data.status} (Healthy)`;
+                    let html = `<div style="color: var(--success-color); font-weight: bold; margin-bottom: 8px;">Diagnosis Success!</div>
+                                <div style="color: var(--text-secondary); margin-bottom: 8px;">
+                                    Model Tested: <strong>${displayModel}</strong><br>
+                                    Latency: ${data.latency}ms<br>
+                                    Status: ${data.status} (Healthy)
+                                </div>`;
                     if (data.greeting) {
-                        const displayName = data.model ? data.model.replace(/^models\//, '') : model.replace(/^models\//, '');
-                        msg += `\n\n${displayName} Response:\n"${data.greeting}"`;
+                        const displayName = data.model ? data.model.replace(/^models\//, '') : displayModel;
+                        html += `<div style="margin-top: 12px; padding: 10px; background: var(--code-bg); border-radius: 4px; font-family: monospace;">
+                                    <span style="color: var(--text-secondary); font-size: 0.85rem;">${displayName} Response:</span><br>
+                                    <span style="color: var(--text-primary);">"${data.greeting}"</span>
+                                 </div>`;
                     }
-                    alert(msg);
+                    modelsModalContent.innerHTML = html;
                 } else {
-                    alert(`Diagnosis Failed!\n\nModel Tested: ${model.replace(/^models\//, '')}\nStatus: ${data.status || 'Error'}\nDetails: ${data.error || 'Connection failed'}`);
+                    modelsModalContent.innerHTML = `<div style="color: var(--danger-color); font-weight: bold;">Diagnosis Failed!</div>
+                                                   <div style="color: var(--text-secondary); margin-top: 4px;">Model Tested: <strong>${displayModel}</strong></div>
+                                                   <div style="color: var(--text-secondary); margin-top: 4px;">Status: ${data.status || 'Error'}</div>
+                                                   <div style="color: var(--text-secondary); margin-top: 4px;">Details: ${data.error || 'Connection failed'}</div>`;
                 }
             } catch (e) {
-                alert('Diagnosis failed: ' + e.message);
+                modelsModalContent.innerHTML = `<div style="color: var(--danger-color); font-weight: bold;">Error:</div><div style="color: var(--text-secondary); margin-top: 4px;">${e.message}</div>`;
             } finally {
                 button.textContent = originalText;
                 button.disabled = false;
@@ -2173,12 +2270,14 @@
                     diagnoseBtn.onclick = () => diagnoseKey(token, key, isOAuth, diagnoseBtn);
                     actionsDiv.appendChild(diagnoseBtn);
 
-                    // Add Models button to every key
-                    const modelsBtn = document.createElement('button');
-                    modelsBtn.textContent = 'Models';
-                    modelsBtn.className = 'btn-secondary-outline';
-                    modelsBtn.onclick = () => showModels(token, key, isOAuth, modelsBtn);
-                    actionsDiv.appendChild(modelsBtn);
+                    // Add Models button only to OAuth keys
+                    if (isOAuth) {
+                        const modelsBtn = document.createElement('button');
+                        modelsBtn.textContent = 'Models';
+                        modelsBtn.className = 'btn-secondary-outline';
+                        modelsBtn.onclick = () => showModels(token, key, isOAuth, modelsBtn);
+                        actionsDiv.appendChild(modelsBtn);
+                    }
 
                     if (isInvalid || exhaustedModels.length > 0) {
                         const resetBtn = document.createElement('button');
@@ -2438,11 +2537,12 @@
         document.getElementById('deleteButton').addEventListener('click', async () => {
             const accessToken = accessTokenInput.value.trim();
             if (!accessToken) {
-                alert('Please enter an Access Token to delete.');
+                showAlert('Warning', 'Please enter an Access Token to delete.', 'error');
                 return;
             }
 
-            if (!confirm(`Are you sure you want to delete all credentials for the token "${accessToken}"? This action cannot be undone.`)) {
+            const confirmed = await showConfirm('Delete Credentials', `Are you sure you want to delete all credentials for the token "${accessToken}"? This action cannot be undone.`);
+            if (!confirmed) {
                 return;
             }
 
@@ -2576,18 +2676,18 @@
                             const newCreds = exData.credential_string;
                             // Check if already in list
                             if (current.includes(newCreds)) {
-                                alert('This account is already in your credentials list.');
+                                showAlert('OAuth Notice', 'This account is already in your credentials list.', 'info');
                             } else {
                                 oauthCredentialsTextarea.value = current ? current + '\n' + newCreds : newCreds;
-                                alert('Google account connected and added to credentials list!');
+                                showAlert('OAuth Success', 'Google account connected and added to credentials list!', 'success');
                             }
                         } else {
-                            alert('Exchange failed: ' + (exData.error || 'Unknown error'));
+                            showAlert('OAuth Error', 'Exchange failed: ' + (exData.error || 'Unknown error'), 'error');
                         }
                     }
                 };
             } catch (error) {
-                alert('Error starting OAuth: ' + error.message);
+                showAlert('OAuth Error', 'Error starting OAuth: ' + error.message, 'error');
             }
         });
 
@@ -2624,17 +2724,17 @@
                     const current = oauthCredentialsTextarea.value.trim();
                     const newCreds = exData.credential_string;
                     if (current.includes(newCreds)) {
-                        alert('This account is already in your credentials list.');
+                        showAlert('OAuth Notice', 'This account is already in your credentials list.', 'info');
                     } else {
                         oauthCredentialsTextarea.value = current ? current + '\n' + newCreds : newCreds;
-                        alert('Google account exchanged and added successfully!');
+                        showAlert('OAuth Success', 'Google account exchanged and added successfully!', 'success');
                         manualCodeInput.value = '';
                     }
                 } else {
-                    alert('Exchange failed: ' + (exData.error || 'Unknown error'));
+                    showAlert('OAuth Error', 'Exchange failed: ' + (exData.error || 'Unknown error'), 'error');
                 }
             } catch (error) {
-                alert('Error exchanging code: ' + error.message);
+                showAlert('OAuth Error', 'Error exchanging code: ' + error.message, 'error');
             }
         });
 
@@ -2728,11 +2828,12 @@
         document.getElementById('oauthDeleteButton').addEventListener('click', async () => {
             const accessToken = oauthAccessTokenInput.value.trim();
             if (!accessToken) {
-                alert('Please enter an Access Token to delete.');
+                showAlert('Warning', 'Please enter an Access Token to delete.', 'error');
                 return;
             }
 
-            if (!confirm(`Are you sure you want to delete all OAuth credentials for the token "${accessToken}"? This action cannot be undone.`)) {
+            const confirmed = await showConfirm('Delete OAuth Credentials', `Are you sure you want to delete all OAuth credentials for the token "${accessToken}"? This action cannot be undone.`);
+            if (!confirmed) {
                 return;
             }
 
@@ -2831,22 +2932,23 @@
                     adminsTableBody.appendChild(row);
                 });
             } catch (e) {
-                alert(e.message);
+                showAlert('Error', e.message, 'error');
             }
         }
 
         async function deleteAdmin(email) {
-            if (!confirm(`Are you sure you want to remove admin ${email}?`)) return;
+            const confirmed = await showConfirm('Remove Admin', `Are you sure you want to remove admin ${email}?`);
+            if (!confirmed) return;
             try {
                 const res = await fetch(`/api/admins?email=${encodeURIComponent(email)}`, { method: 'DELETE' });
                 if (res.ok) {
                     loadAdmins();
                 } else {
                     const data = await res.json();
-                    alert(data.error || 'Failed to delete admin');
+                    showAlert('Error', data.error || 'Failed to delete admin', 'error');
                 }
             } catch (e) {
-                alert(e.message);
+                showAlert('Error', e.message, 'error');
             }
         }
 
@@ -2866,12 +2968,13 @@
                 if (res.ok) {
                     document.getElementById('newAdminEmail').value = '';
                     loadAdmins();
+                    showAlert('Success', 'Admin added successfully!', 'success');
                 } else {
                     const data = await res.json();
-                    alert(data.error || 'Failed to add admin');
+                    showAlert('Error', data.error || 'Failed to add admin', 'error');
                 }
             } catch (e) {
-                alert(e.message);
+                showAlert('Error', e.message, 'error');
             } finally {
                 setButtonLoading(submitBtn, false);
             }
