@@ -1120,10 +1120,16 @@ export class KeyRotator {
 								}
 							}
 
-							if (stateChanged) {
+							// Update new dynamic availableModels
+							const newAvailableModels = supportedModels.map(b => b.modelId).filter(Boolean);
+							const oldAvailableModels = updatedOauthKeyStates[i].availableModels || [];
+							const availableModelsChanged = JSON.stringify(newAvailableModels.sort()) !== JSON.stringify([...oldAvailableModels].sort());
+
+							if (stateChanged || availableModelsChanged) {
 								updatedOauthKeyStates[i] = {
 									...updatedOauthKeyStates[i],
 									modelUnavailable: mu,
+									availableModels: newAvailableModels,
 									lastModelSyncTime: Date.now()
 								};
 								anyChange = true;
@@ -1562,10 +1568,16 @@ export class KeyRotator {
 									}
 								}
 
-								if (stateChanged) {
+								// Update new dynamic availableModels
+								const newAvailableModels = buckets.map(b => b.modelId).filter(Boolean);
+								const oldAvailableModels = updatedOauthKeyStates[targetIndex].availableModels || [];
+								const availableModelsChanged = JSON.stringify(newAvailableModels.sort()) !== JSON.stringify([...oldAvailableModels].sort());
+
+								if (stateChanged || availableModelsChanged) {
 									updatedOauthKeyStates[targetIndex] = {
 										...updatedOauthKeyStates[targetIndex],
 										modelUnavailable: mu,
+										availableModels: newAvailableModels,
 										lastModelSyncTime: Date.now()
 									};
 
@@ -1999,7 +2011,8 @@ export class KeyRotator {
 					mod,
 					this.ctx.env.OAUTH_CLIENT_ID,
 					this.ctx.env.OAUTH_CLIENT_SECRET,
-					this.ctx
+					this.ctx,
+					oauthKeyStates
 				);
 			};
 

@@ -50,7 +50,8 @@ export async function handleGeminiCli(
 	state: DurableObjectState,
 	proxyRequest: (request: Request, isStreaming: boolean, accessToken?: string) => Promise<Response>,
 	model?: string,
-	ctx?: SystemContext
+	ctx?: SystemContext,
+	oauthKeyStates: any[] = []
 ): Promise<Response> {
 	try {
 		const reqAny = request as any;
@@ -93,7 +94,8 @@ export async function handleGeminiCli(
 		if (rawModel && rawModel.endsWith('-oauth')) {
 			rawModel = rawModel.substring(0, rawModel.length - 6);
 		}
-		const effectiveModel = mapModelForInternalApi(rawModel);
+		const { resolveModelWithOAuthSupport } = await import('./models');
+		const effectiveModel = resolveModelWithOAuthSupport(rawModel, oauthKeyStates);
 
 		const internalRequest: any = {
 			contents: safeLiteCompress((nativeBody.contents || []).map((c: any) => ({
@@ -279,14 +281,15 @@ export async function handleGemini(
 	model?: string,
 	defaultClientId?: string,
 	defaultClientSecret?: string,
-	ctx?: SystemContext
+	ctx?: SystemContext,
+	oauthKeyStates: any[] = []
 ): Promise<Response> {
 	const requestUrl = new URL(request.url);
 
 	if (apiKey.includes(':') || requestUrl.pathname.includes('/oauth/models')) {
 		try {
 			const credentials = parseOAuthCredentials(apiKey, defaultClientId, defaultClientSecret);
-			return await handleGeminiCli(request, credentials, state, proxyRequest, model, ctx);
+			return await handleGeminiCli(request, credentials, state, proxyRequest, model, ctx, oauthKeyStates);
 		} catch (e: any) {
 			return new Response(`OAuth Error: ${e.message}`, { status: 401 });
 		}

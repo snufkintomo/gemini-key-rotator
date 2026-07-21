@@ -20,6 +20,9 @@ export function getStandardRotationIndex(
 		if (model && state?.exhaustedUntil?.[model]) continue;
 		if (!model && state?.exhaustedUntil) continue;
 		if (model && state?.modelUnavailable?.[model]) continue; // permanently unavailable model for this key
+		if (model && Array.isArray(state?.availableModels)) {
+			if (!state.availableModels.includes(model)) continue;
+		}
 		return idx;
 	}
 	return null;

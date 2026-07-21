@@ -182,4 +182,48 @@ describe('KeyRotator Architectural Optimizations & Performance Tests (TDD)', () 
         expect(redactedHeaders['x-api-key']).toBe('[REDACTED]');
         expect(redactedHeaders['x-normal-header']).toBe('NormalValue');
     });
+
+    it('should support dynamic availableModels array in KeyState and select keys based on inclusion', async () => {
+        const { getStandardRotationIndex } = await import('./utils/credentials');
+        const apiKeys = ['key1', 'key2'];
+        const now = Date.now();
+
+        // key1 has availableModels containing only flash
+        // key2 has availableModels containing flash and pro
+        const states = [
+            { availableModels: ['gemini-1.5-flash'] },
+            { availableModels: ['gemini-1.5-flash', 'gemini-1.5-pro'] }
+        ];
+
+        // 1. Requesting gemini-1.5-pro should ONLY match key2 (index 1)
+        const idxPro = getStandardRotationIndex(apiKeys, 0, states, 'gemini-1.5-pro', now);
+        expect(idxPro).toBe(1);
+
+        // 2. Requesting gemini-1.5-flash can match key1 (index 0) or key2
+        const idxFlash = getStandardRotationIndex(apiKeys, 0, states, 'gemini-1.5-flash', now);
+        expect(idxFlash).toBe(0);
+
+        // 3. Requesting gemini-4-flash (unsupported by both) should return null (triggering Level 3 fallback in rotator)
+        const idxUnsupported = getStandardRotationIndex(apiKeys, 0, states, 'gemini-4-flash', now);
+        expect(idxUnsupported).toBeNull();
+    });
+
+    it('should conditionally map rawModel to companion model only if no tokens support it directly', async () => {
+        const { resolveModelWithOAuthSupport } = await import('./utils/models');
+
+        const statesWithSupport = [
+            { availableModels: ['gemini-pro-latest'] }
+        ];
+        const statesNoSupport = [
+            { availableModels: ['gemini-3.1-pro-preview'] }
+        ];
+
+        // Case 1: At least one token supports 'gemini-pro-latest' directly -> Do NOT map
+        const model1 = resolveModelWithOAuthSupport('gemini-pro-latest', statesWithSupport);
+        expect(model1).toBe('gemini-pro-latest');
+
+        // Case 2: No token supports 'gemini-pro-latest' -> Apply mapModelForInternalApi mapping fallback
+        const model2 = resolveModelWithOAuthSupport('gemini-pro-latest', statesNoSupport);
+        expect(model2).toBe('gemini-3.1-pro-preview'); // Mapped version
+    });
 });

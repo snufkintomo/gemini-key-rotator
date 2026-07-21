@@ -291,4 +291,72 @@ describe('Native Gemini Protocol Integration', () => {
         expect(resJson.usageMetadata.promptTokenCount).toBe(4);
         expect(resJson.usageMetadata.candidatesTokenCount).toBe(13);
     });
+
+    it('should conditionally bypass model translation if at least one oauth state has availableModels supporting it', async () => {
+        const originalFetch = globalThis.fetch;
+        globalThis.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+            access_token: 'fake-access-token',
+            expires_in: 3600
+        })));
+
+        const request = new Request('https://api.rotator.org/v1/models/gemini-pro-latest:generateContent', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ contents: [{ parts: [{ text: 'hello' }] }] })
+        });
+
+        let capturedModel: string | undefined;
+
+        const mockProxyRequest = vi.fn().mockImplementation(async (reqToProxy: Request) => {
+            const body = await reqToProxy.clone().json() as any; // Clone first to be safe
+            capturedModel = body.model;
+            return new Response(JSON.stringify({
+                response: {
+                    candidates: [{
+                        content: {
+                            parts: [{ text: 'I am Gemini' }],
+                            role: 'model'
+                        },
+                        finishReason: 'STOP',
+                        index: 0
+                    }]
+                }
+            }));
+        });
+
+        const mockDurableState = {
+            storage: {
+                get: vi.fn().mockResolvedValue(null),
+                put: vi.fn(),
+            }
+        } as any;
+
+        const oauthKey = 'client_id:client_secret:refresh_token:project_id:email@gmail.com';
+        
+        // Pass oauthKeyStates where 'gemini-pro-latest' IS supported
+        const supportedStates = [{ availableModels: ['gemini-pro-latest'] }];
+
+        let response: Response;
+        try {
+            response = await handleGemini(
+                request,
+                oauthKey,
+                async () => 'https://cloudcode-pa.googleapis.com',
+                mockProxyRequest,
+                mockDurableState,
+                'gemini-pro-latest',
+                'client',
+                'secret',
+                undefined,
+                supportedStates
+            );
+        } finally {
+            globalThis.fetch = originalFetch;
+        }
+
+        expect(mockProxyRequest).toHaveBeenCalled();
+        
+        // Since 'gemini-pro-latest' was supported, the body model should be gemini-pro-latest, NOT mapped to gemini-3.1-pro-preview!
+        expect(capturedModel).toBe('gemini-pro-latest');
+    });
 });

@@ -137,6 +137,25 @@ export function mapModelForInternalApi(model: string): string {
 	return MODEL_FALLBACKS[model] || model;
 }
 
+import { KeyState } from '../types';
+
+export function resolveModelWithOAuthSupport(rawModel: string, keyStates: KeyState[]): string {
+	// If at least one active state's availableModels contains rawModel, do NOT map it!
+	const hasNativeSupport = keyStates.some(state => {
+		if (state && Array.isArray(state.availableModels)) {
+			return state.availableModels.includes(rawModel);
+		}
+		return false;
+	});
+
+	if (hasNativeSupport) {
+		return rawModel;
+	}
+
+	// Otherwise, fallback to the standard companion mapModelForInternalApi mapping
+	return mapModelForInternalApi(rawModel);
+}
+
 import { getGeminiModelFromPath } from './gemini';
 
 export async function parseRequestModel(request: Request): Promise<string | undefined> {
