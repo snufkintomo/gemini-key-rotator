@@ -3,7 +3,6 @@ import {
 	handleModels,
 	parseRequestModel,
 	resolveModelAndAuthMode,
-	KNOWN_GEMINI_MODELS,
 } from './utils/models';
 import { handleOpenAI, handleEmbeddings } from './utils/openai';
 import { handleClaude } from './utils/claude';
@@ -1096,39 +1095,14 @@ export class KeyRotator {
 						// 3. Fetch supported models list from Google
 						const supportedModels = await fetchAvailableModelsForToken(activeAccessToken, projectId);
 						if (supportedModels.length > 0) {
-							const mu = { ...(updatedOauthKeyStates[i].modelUnavailable || {}) };
-							let stateChanged = false;
-
-							// If a known model is NOT in Google's returned list, mark it as unavailable
-							for (const model of KNOWN_GEMINI_MODELS) {
-								const isSupported = supportedModels.some(b => {
-									const l = (b.modelId || '').toLowerCase();
-									return l.includes(model.toLowerCase()) || 
-										(model === 'gemini-3-flash-preview' && l.includes('gemini-3-flash'));
-								});
-								
-								if (!isSupported) {
-									if (!mu[model]) {
-										mu[model] = true;
-										stateChanged = true;
-									}
-								} else {
-									if (mu[model]) {
-										delete mu[model];
-										stateChanged = true;
-									}
-								}
-							}
-
 							// Update new dynamic availableModels
 							const newAvailableModels = supportedModels.map(b => b.modelId).filter(Boolean);
 							const oldAvailableModels = updatedOauthKeyStates[i].availableModels || [];
 							const availableModelsChanged = JSON.stringify(newAvailableModels.sort()) !== JSON.stringify([...oldAvailableModels].sort());
 
-							if (stateChanged || availableModelsChanged) {
+							if (availableModelsChanged) {
 								updatedOauthKeyStates[i] = {
 									...updatedOauthKeyStates[i],
-									modelUnavailable: mu,
 									availableModels: newAvailableModels,
 									lastModelSyncTime: Date.now()
 								};
@@ -1545,38 +1519,14 @@ export class KeyRotator {
 									updatedOauthKeyStates.push({});
 								}
 
-								const mu = { ...(updatedOauthKeyStates[targetIndex].modelUnavailable || {}) };
-								let stateChanged = false;
-
-								for (const model of KNOWN_GEMINI_MODELS) {
-									const isSupported = buckets.some(b => {
-										const l = (b.modelId || '').toLowerCase();
-										return l.includes(model.toLowerCase()) || 
-											(model === 'gemini-3-flash-preview' && l.includes('gemini-3-flash'));
-									});
-
-									if (!isSupported) {
-										if (!mu[model]) {
-											mu[model] = true;
-											stateChanged = true;
-										}
-									} else {
-										if (mu[model]) {
-											delete mu[model];
-											stateChanged = true;
-										}
-									}
-								}
-
 								// Update new dynamic availableModels
 								const newAvailableModels = buckets.map(b => b.modelId).filter(Boolean);
 								const oldAvailableModels = updatedOauthKeyStates[targetIndex].availableModels || [];
 								const availableModelsChanged = JSON.stringify(newAvailableModels.sort()) !== JSON.stringify([...oldAvailableModels].sort());
 
-								if (stateChanged || availableModelsChanged) {
+								if (availableModelsChanged) {
 									updatedOauthKeyStates[targetIndex] = {
 										...updatedOauthKeyStates[targetIndex],
-										modelUnavailable: mu,
 										availableModels: newAvailableModels,
 										lastModelSyncTime: Date.now()
 									};
