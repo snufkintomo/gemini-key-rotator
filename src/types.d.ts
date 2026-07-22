@@ -12,6 +12,11 @@ export interface KeyState {
 	exhaustedUntil?: { [model: string]: number };
 	invalid?: boolean;
 	modelUnavailable?: { [model: string]: boolean }; // permanently unavailable model for this key (e.g. model deprecated for new users)
+	availableModels?: string[];
+	lastStatus?: number | string;
+	lastError?: string;
+	lastTestedAt?: number;
+	lastModelSyncTime?: number;
 }
 
 export interface ApiCredentials {
@@ -21,6 +26,9 @@ export interface ApiCredentials {
 	oauth_credentials?: string;
 	current_oauth_index?: number;
 	oauth_key_states?: string | null; // JSON string of KeyState[]
+	antigravity_credentials?: string;
+	current_antigravity_index?: number;
+	antigravity_key_states?: string | null; // JSON string of KeyState[]
 	enable_logging?: number;
 	enable_pruning?: number | null;
 }

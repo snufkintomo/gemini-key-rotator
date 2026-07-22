@@ -10,7 +10,7 @@ export function getGeminiModelForGemini(geminiModel: string): string {
 	//}
 	// If the model is not an old 2.5 version, use it directly
 	if (geminiModel === 'gemini-translate') {
-		return 'gemini-3.1-flash-lite';
+		return 'gemini-3.5-flash-lite';
 	}
 	//if (geminiModel === 'gemini-3-flash-preview') {  //use for cline to map to gemini-3.5-flash
 	//	return 'gemini-3.5-flash';
@@ -89,13 +89,17 @@ export function getGeminiModelForOpenAI(openAIModel: string): string {
 	}
 }
 
-export function resolveModelAndAuthMode(rawModel: string | undefined, authMode: string | null, accessToken: string): { model: string | undefined, useOAuth: boolean } {
+export function resolveModelAndAuthMode(rawModel: string | undefined, authMode: string | null, accessToken: string): { model: string | undefined, useOAuth: boolean, useAntigravity: boolean } {
 	let model = rawModel;
 	let oauthExplicitlyRequested = false;
+	let antigravityExplicitlyRequested = false;
 
 	if (model && model.endsWith('-oauth')) {
 		model = model.substring(0, model.length - 6);
 		oauthExplicitlyRequested = true;
+	} else if (model && model.endsWith('-agy')) {
+		model = model.substring(0, model.length - 4);
+		antigravityExplicitlyRequested = true;
 	}
 
 	// Protocol transformation if needed
@@ -110,9 +114,11 @@ export function resolveModelAndAuthMode(rawModel: string | undefined, authMode: 
 		}
 	}
 
-	// Determine OAuth
-	let useOAuth = oauthExplicitlyRequested;
-	if (!useOAuth) {
+	// Determine OAuth / Antigravity
+	let useAntigravity = antigravityExplicitlyRequested;
+	let useOAuth = !useAntigravity && oauthExplicitlyRequested;
+
+	if (!useOAuth && !useAntigravity) {
 		if (accessToken.includes(':')) {
 			useOAuth = true;
 		} else if (authMode === "google" && accessToken.length > 100) {
@@ -122,7 +128,7 @@ export function resolveModelAndAuthMode(rawModel: string | undefined, authMode: 
 		}
 	}
 
-	return { model: resolvedModel, useOAuth };
+	return { model: resolvedModel, useOAuth, useAntigravity };
 }
 
 // Function to map Gemini models to supported internal model names for CLI/Internal APIs
@@ -132,6 +138,8 @@ export function mapModelForInternalApi(model: string): string {
 		'gemini-pro-latest': 'gemini-3.1-pro-preview',
 		'gemini-flash-latest': 'gemini-3-flash-preview',
 		'gemini-3.5-flash': 'gemini-3-flash-preview',  // gemini-cli no 3.5 flash
+		'gemini-3.5-flash-lite': 'gemini-3.1-flash-lite',  // gemini-cli no 3.5 flash lite
+		'gemini-3.6-flash': 'gemini-3-flash-preview',  // gemini-cli no 3.6 flash
 		'gemini-flash-lite-latest': 'gemini-3.1-flash-lite',
 	};
 	return MODEL_FALLBACKS[model] || model;

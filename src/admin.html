@@ -647,6 +647,7 @@
         <div class="tab-buttons">
             <button class="tab-button" data-tab="credentials-tab">API Keys</button>
             <button class="tab-button" data-tab="oauth-tab">OAuth Credentials</button>
+            <button class="tab-button" data-tab="antigravity-tab">Antigravity Keys</button>
             <button class="tab-button" data-tab="logs-tab">API Logs</button>
             <button class="tab-button" data-tab="stats-tab">Statistics</button>
             <button class="tab-button" data-tab="trends-tab">Trends</button>
@@ -757,6 +758,72 @@
             <div id="oauth-key-health" class="key-status-container" style="display: none;">
                 <h3>Current Credential Health</h3>
                 <div id="oauth-key-status-list" class="key-status-list"></div>
+            </div>
+        </div>
+
+        <!-- Antigravity Credentials Tab -->
+        <div id="antigravity-tab" class="tab-content">
+            <h2>Manage Antigravity OAuth Credentials</h2>
+            <p>Set up Antigravity OAuth credentials using official Google Cloud Code headers and isolated credential pools. Requests using <code>-agy</code> models (e.g. <code>gemini-2.5-pro-agy</code>) will automatically route to this pool.</p>
+
+            <form id="antigravityForm">
+                <label for="agyAccessTokenSelect">Access Token:</label><br>
+                <div style="display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 0.5rem;">
+                    <select id="agyAccessTokenSelect" style="width: 100%;">
+                        <option value="">-- Loading... --</option>
+                    </select>
+                    <input type="text" id="agyAccessToken" name="agyAccessToken" required placeholder="Custom Access Token (at least 10 chars)" style="display: none; width: 100%;">
+                </div>
+                <div style="margin-bottom: 1.5rem; display: flex; flex-wrap: wrap; gap: 1.5rem;">
+                    <label style="display: inline-flex; align-items: center; gap: 0.5rem; font-weight: 500; cursor: pointer; user-select: none;">
+                        <input type="checkbox" id="agyEnableLogging" style="width: auto; margin: 0;"> 
+                        Enable API Logging
+                    </label>
+                    <label style="display: inline-flex; align-items: center; gap: 0.5rem; font-weight: 500; cursor: pointer; user-select: none;">
+                        <input type="checkbox" id="agyEnablePruning" style="width: auto; margin: 0;"> 
+                        Enable Prompt Pruning
+                    </label>
+                </div>
+                
+                <div style="background: var(--code-bg); padding: 1.5rem; border-radius: 8px; border: 1px solid var(--border-color); margin-bottom: 1.5rem;">
+                    <h3 style="margin-top: 0;">Connect Antigravity Account</h3>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                        <div>
+                            <label for="agyClientId">Client ID:</label>
+                            <input type="text" id="agyClientId" value="1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com" placeholder="Antigravity OAuth Client ID">
+                        </div>
+                        <div>
+                            <label for="agyClientSecret">Client Secret:</label>
+                            <input type="text" id="agyClientSecret" value="GOCSPX-K5FWR486LdLJ1mLB8sXC4z6qDAf" placeholder="Antigravity OAuth Client Secret">
+                        </div>
+                    </div>
+                    <button type="button" id="agyConnectGoogleBtn" style="background-color: #6366f1;">🚀 Connect Antigravity Account</button>
+                    <p style="font-size: 0.85rem; color: #718096; margin-top: 0.5rem;">This will open a popup. If the redirect fails (localhost:8085), <strong>copy the full URL</strong> from the address bar and paste it below.</p>
+                    
+                    <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #e2e8f0;">
+                        <label for="agyManualCode">Manual Callback URL or Code:</label>
+                        <div style="display: flex; gap: 0.5rem;">
+                            <input type="text" id="agyManualCode" placeholder="Paste localhost URL or code here">
+                            <button type="button" id="agyManualExchangeBtn" style="width: auto; white-space: nowrap;">Exchange</button>
+                        </div>
+                    </div>
+                </div>
+
+                <label for="antigravityCredentials">Antigravity OAuth Credentials (One per line):</label>
+                <textarea id="antigravityCredentials" name="antigravityCredentials" required placeholder="client_id:client_secret:refresh_token:project_id:email"></textarea>
+                <br><br>
+                <div class="button-group">
+                    <button type="submit">Save Antigravity Credentials</button>
+                    <button type="button" id="agyDeleteButton">Clear Antigravity Credentials</button>
+                </div>
+            </form>
+
+            <div id="antigravityResult"></div>
+
+            <!-- Key Health Section for Antigravity -->
+            <div id="agy-key-health" class="key-status-container" style="display: none;">
+                <h3>Current Antigravity Credential Health</h3>
+                <div id="agy-key-status-list" class="key-status-list"></div>
             </div>
         </div>
 
@@ -2008,6 +2075,12 @@
                 loadStatistics();
             } else if (tabId === 'admins-tab') {
                 loadAdmins();
+            } else if (tabId === 'antigravity-tab') {
+                loadTokenDropdown('antigravity');
+            } else if (tabId === 'oauth-tab') {
+                loadTokenDropdown('oauth');
+            } else if (tabId === 'credentials-tab') {
+                loadTokenDropdown('api');
             }
         }
 
@@ -2077,7 +2150,7 @@
             }
         }
 
-        async function diagnoseKey(token, key, isOAuth, button) {
+        async function diagnoseKey(token, key, isOAuth, button, isAntigravity = false) {
             const originalText = button.textContent;
             button.textContent = 'Testing...';
             button.disabled = true;
@@ -2088,7 +2161,7 @@
                 const response = await fetch('/api/key-diagnose', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ access_token: token, key, isOAuth })
+                    body: JSON.stringify({ access_token: token, key, isOAuth, isAntigravity })
                 });
                 const data = await response.json();
                 
@@ -2100,13 +2173,13 @@
                         html += `<div style="margin-top: 12px; padding: 8px; background: var(--code-bg); border-radius: 4px; font-family: monospace;">${displayName} Response:<br>"${data.greeting}"</div>`;
                     }
                     showSystemModal('Key Diagnostics', html);
-                    updateKeyHealth(token, isOAuth ? 'oauth' : 'api');
+                    updateKeyHealth(token, isAntigravity ? 'antigravity' : (isOAuth ? 'oauth' : 'api'));
                 } else {
                     const html = `<div style="color: var(--danger-color); font-weight: bold;">Diagnosis Failed!</div>
                                   <div style="color: var(--text-secondary); margin-top: 4px;">Status: ${data.status || 'Error'}</div>
                                   <div style="color: var(--text-secondary); margin-top: 4px;">Details: ${data.error || 'Connection failed'}</div>`;
                     showSystemModal('Diagnosis Failed', html);
-                    updateKeyHealth(token, isOAuth ? 'oauth' : 'api');
+                    updateKeyHealth(token, isAntigravity ? 'antigravity' : (isOAuth ? 'oauth' : 'api'));
                 }
             } catch (e) {
                 showSystemModal('Diagnosis Failed', `<div style="color: var(--danger-color); font-weight: bold;">Error:</div><div style="color: var(--text-secondary); margin-top: 4px;">${e.message}</div>`);
@@ -2116,7 +2189,7 @@
             }
         }
 
-        async function showModels(token, key, isOAuth, button) {
+        async function showModels(token, key, isOAuth, button, isAntigravity = false) {
             const originalText = button.textContent;
             button.textContent = 'Querying...';
             button.disabled = true;
@@ -2130,7 +2203,7 @@
                         'Content-Type': 'application/json',
                         'Authorization': `Bearer ${token}`
                     },
-                    body: JSON.stringify({ access_token: token, key, isOAuth })
+                    body: JSON.stringify({ access_token: token, key, isOAuth, isAntigravity })
                 });
                 const data = await response.json();
                 
@@ -2210,25 +2283,44 @@
         }
 
         async function updateKeyHealth(token, type) {
-            const isOAuth = type === 'oauth';
-            const healthContainer = document.getElementById(isOAuth ? 'oauth-key-health' : 'api-key-health');
-            const listContainer = document.getElementById(isOAuth ? 'oauth-key-status-list' : 'api-key-status-list');
+            const isOAuth = type === 'oauth' || type === true;
+            const isAntigravity = type === 'antigravity';
+
+            let healthContainer = document.getElementById('api-key-health');
+            let listContainer = document.getElementById('api-key-status-list');
+
+            if (isAntigravity) {
+                healthContainer = document.getElementById('agy-key-health');
+                listContainer = document.getElementById('agy-key-status-list');
+            } else if (isOAuth) {
+                healthContainer = document.getElementById('oauth-key-health');
+                listContainer = document.getElementById('oauth-key-status-list');
+            }
             
             try {
                 const res = await fetch(`/api/key-status?access_token=${encodeURIComponent(token)}`);
                 if (!res.ok) {
-                    healthContainer.style.display = 'none';
+                    if (healthContainer) healthContainer.style.display = 'none';
                     return;
                 }
                 const data = await res.json();
-                const keys = isOAuth ? data.oauth_credentials : data.api_keys;
-                const states = isOAuth ? data.oauth_key_states : data.key_states;
+                let keys = data.api_keys;
+                let states = data.key_states;
+
+                if (isAntigravity) {
+                    keys = data.antigravity_credentials;
+                    states = data.antigravity_key_states;
+                } else if (isOAuth) {
+                    keys = data.oauth_credentials;
+                    states = data.oauth_key_states;
+                }
 
                 if (!keys || keys.length === 0) {
-                    healthContainer.style.display = 'none';
+                    if (healthContainer) healthContainer.style.display = 'none';
                     return;
                 }
 
+                if (healthContainer) healthContainer.style.display = 'block';
                 listContainer.innerHTML = '';
                 keys.forEach((key, idx) => {
                     const state = states[idx] || {};
@@ -2267,15 +2359,15 @@
                     const diagnoseBtn = document.createElement('button');
                     diagnoseBtn.textContent = 'Diagnose';
                     diagnoseBtn.className = 'btn-secondary-outline';
-                    diagnoseBtn.onclick = () => diagnoseKey(token, key, isOAuth, diagnoseBtn);
+                    diagnoseBtn.onclick = () => diagnoseKey(token, key, isOAuth, diagnoseBtn, isAntigravity);
                     actionsDiv.appendChild(diagnoseBtn);
 
-                    // Add Models button only to OAuth keys
-                    if (isOAuth) {
+                    // Add Models button for OAuth & Antigravity keys
+                    if (isOAuth || isAntigravity) {
                         const modelsBtn = document.createElement('button');
                         modelsBtn.textContent = 'Models';
                         modelsBtn.className = 'btn-secondary-outline';
-                        modelsBtn.onclick = () => showModels(token, key, isOAuth, modelsBtn);
+                        modelsBtn.onclick = () => showModels(token, key, isOAuth, modelsBtn, isAntigravity);
                         actionsDiv.appendChild(modelsBtn);
                     }
 
@@ -2283,7 +2375,7 @@
                         const resetBtn = document.createElement('button');
                         resetBtn.textContent = 'Reset';
                         resetBtn.className = 'btn-danger-outline';
-                        resetBtn.onclick = () => resetKeyHealth(token, key, isOAuth);
+                        resetBtn.onclick = () => resetKeyHealth(token, key, isOAuth, isAntigravity);
                         actionsDiv.appendChild(resetBtn);
                     }
 
@@ -2291,21 +2383,42 @@
                     item.appendChild(actionsDiv);
                     listContainer.appendChild(item);
                 });
-                healthContainer.style.display = 'block';
+                if (healthContainer) healthContainer.style.display = 'block';
             } catch (e) {
                 console.error('Error fetching key health:', e);
-                healthContainer.style.display = 'none';
+                if (healthContainer) healthContainer.style.display = 'none';
             }
         }
 
-        async function loadTokenDropdown(isOAuth, selectToken = null) {
-            const selectEl = isOAuth ? document.getElementById('oauthAccessTokenSelect') : document.getElementById('accessTokenSelect');
-            const inputEl = isOAuth ? document.getElementById('oauthAccessToken') : document.getElementById('accessToken');
-            const textareaEl = isOAuth ? document.getElementById('oauthCredentials') : document.getElementById('apiKeys');
-            const healthContainer = document.getElementById(isOAuth ? 'oauth-key-health' : 'api-key-health');
-            const url = isOAuth ? '/api/oauth-credentials' : '/api/credentials';
-            const checkboxEl = isOAuth ? document.getElementById('oauthEnableLogging') : document.getElementById('enableLogging');
-            const pruningCheckboxEl = isOAuth ? document.getElementById('oauthEnablePruning') : document.getElementById('enablePruning');
+        async function loadTokenDropdown(type, selectToken = null) {
+            const isOAuth = type === true || type === 'oauth';
+            const isAntigravity = type === 'antigravity';
+
+            let selectEl = document.getElementById('accessTokenSelect');
+            let inputEl = document.getElementById('accessToken');
+            let textareaEl = document.getElementById('apiKeys');
+            let healthContainer = document.getElementById('api-key-health');
+            let url = '/api/credentials';
+            let checkboxEl = document.getElementById('enableLogging');
+            let pruningCheckboxEl = document.getElementById('enablePruning');
+
+            if (isAntigravity) {
+                selectEl = document.getElementById('agyAccessTokenSelect');
+                inputEl = document.getElementById('agyAccessToken');
+                textareaEl = document.getElementById('antigravityCredentials');
+                healthContainer = document.getElementById('agy-key-health');
+                url = '/api/antigravity-credentials';
+                checkboxEl = document.getElementById('agyEnableLogging');
+                pruningCheckboxEl = document.getElementById('agyEnablePruning');
+            } else if (isOAuth) {
+                selectEl = document.getElementById('oauthAccessTokenSelect');
+                inputEl = document.getElementById('oauthAccessToken');
+                textareaEl = document.getElementById('oauthCredentials');
+                healthContainer = document.getElementById('oauth-key-health');
+                url = '/api/oauth-credentials';
+                checkboxEl = document.getElementById('oauthEnableLogging');
+                pruningCheckboxEl = document.getElementById('oauthEnablePruning');
+            }
 
             try {
                 const response = await fetch(url);
@@ -2356,12 +2469,29 @@
             }
         }
 
-        async function fetchTokenCredentials(token, isOAuth) {
-            const textareaEl = isOAuth ? document.getElementById('oauthCredentials') : document.getElementById('apiKeys');
-            const healthContainer = document.getElementById(isOAuth ? 'oauth-key-health' : 'api-key-health');
-            const url = isOAuth ? '/api/oauth-credentials' : '/api/credentials';
-            const checkboxEl = isOAuth ? document.getElementById('oauthEnableLogging') : document.getElementById('enableLogging');
-            const pruningCheckboxEl = isOAuth ? document.getElementById('oauthEnablePruning') : document.getElementById('enablePruning');
+        async function fetchTokenCredentials(token, type) {
+            const isOAuth = type === true || type === 'oauth';
+            const isAntigravity = type === 'antigravity';
+
+            let textareaEl = document.getElementById('apiKeys');
+            let healthContainer = document.getElementById('api-key-health');
+            let url = '/api/credentials';
+            let checkboxEl = document.getElementById('enableLogging');
+            let pruningCheckboxEl = document.getElementById('enablePruning');
+
+            if (isAntigravity) {
+                textareaEl = document.getElementById('antigravityCredentials');
+                healthContainer = document.getElementById('agy-key-health');
+                url = '/api/antigravity-credentials';
+                checkboxEl = document.getElementById('agyEnableLogging');
+                pruningCheckboxEl = document.getElementById('agyEnablePruning');
+            } else if (isOAuth) {
+                textareaEl = document.getElementById('oauthCredentials');
+                healthContainer = document.getElementById('oauth-key-health');
+                url = '/api/oauth-credentials';
+                checkboxEl = document.getElementById('oauthEnableLogging');
+                pruningCheckboxEl = document.getElementById('oauthEnablePruning');
+            }
 
             try {
                 const response = await fetch(url, {
@@ -2371,7 +2501,12 @@
                     const data = await response.json();
                     checkboxEl.checked = data.enable_logging === 1;
                     pruningCheckboxEl.checked = data.enable_pruning !== 0;
-                    if (isOAuth) {
+                    if (isAntigravity) {
+                        if (data.hasOwnProperty('antigravity_credentials')) {
+                            textareaEl.value = data.antigravity_credentials ? data.antigravity_credentials.replace(/,/g, '\n') : '';
+                            updateKeyHealth(token, 'antigravity');
+                        }
+                    } else if (isOAuth) {
                         if (data.hasOwnProperty('oauth_credentials')) {
                             textareaEl.value = data.oauth_credentials ? data.oauth_credentials.replace(/,/g, '\n') : '';
                             updateKeyHealth(token, 'oauth');
@@ -2884,6 +3019,265 @@
 
             oauthResultDiv.style.display = 'block';
         });
+
+        // Antigravity Form Handling
+        const antigravityForm = document.getElementById('antigravityForm');
+        const agyResultDiv = document.getElementById('antigravityResult');
+        const agyAccessTokenInput = document.getElementById('agyAccessToken');
+        const agyCredentialsTextarea = document.getElementById('antigravityCredentials');
+        const agyClientIdInput = document.getElementById('agyClientId');
+        const agyClientSecretInput = document.getElementById('agyClientSecret');
+        const agyConnectGoogleBtn = document.getElementById('agyConnectGoogleBtn');
+        const agyManualCodeInput = document.getElementById('agyManualCode');
+        const agyManualExchangeBtn = document.getElementById('agyManualExchangeBtn');
+
+        if (document.getElementById('agyAccessTokenSelect')) {
+            document.getElementById('agyAccessTokenSelect').addEventListener('change', (e) => {
+                const value = e.target.value;
+                const inputEl = document.getElementById('agyAccessToken');
+                const textareaEl = document.getElementById('antigravityCredentials');
+                const healthContainer = document.getElementById('agy-key-health');
+
+                if (value === 'create_new') {
+                    inputEl.value = '';
+                    inputEl.style.display = 'block';
+                    textareaEl.value = '';
+                    document.getElementById('agyEnableLogging').checked = false;
+                    document.getElementById('agyEnablePruning').checked = true;
+                    if (healthContainer) healthContainer.style.display = 'none';
+                    inputEl.focus();
+                } else {
+                    inputEl.value = value;
+                    inputEl.style.display = 'none';
+                    fetchTokenCredentials(value, 'antigravity');
+                }
+            });
+        }
+
+        if (agyAccessTokenInput) {
+            agyAccessTokenInput.addEventListener('input', () => {
+                clearTimeout(fetchTimeout);
+                fetchTimeout = setTimeout(async () => {
+                    const token = agyAccessTokenInput.value.trim();
+                    const selectEl = document.getElementById('agyAccessTokenSelect');
+                    const matchingOption = Array.from(selectEl.options).find(opt => opt.value === token);
+                    if (matchingOption) {
+                        selectEl.value = token;
+                        agyAccessTokenInput.style.display = 'none';
+                        fetchTokenCredentials(token, 'antigravity');
+                    }
+                }, 500);
+            });
+        }
+
+        if (agyConnectGoogleBtn) {
+            agyConnectGoogleBtn.addEventListener('click', async () => {
+                const clientId = agyClientIdInput.value.trim() || '1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com';
+                const clientSecret = agyClientSecretInput.value.trim() || 'GOCSPX-K5FWR486LdLJ1mLB8sXC4z6qDAf';
+
+                try {
+                    let authUrl = `/api/oauth-authorize?redirect_uri=${encodeURIComponent(REDIRECT_URI)}&client_id=${clientId}&isAntigravity=true`;
+                    const response = await fetch(authUrl);
+                    const data = await response.json();
+                    
+                    window.open(data.url, 'antigravity_oauth', 'width=600,height=700');
+                    
+                    window.onmessage = async (event) => {
+                        if (event.data.type === 'oauth-code') {
+                            const code = event.data.code;
+                            const exRes = await fetch('/api/oauth-exchange', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ 
+                                    code, 
+                                    client_id: clientId, 
+                                    client_secret: clientSecret, 
+                                    redirect_uri: REDIRECT_URI,
+                                    isAntigravity: true
+                                })
+                            });
+                            const exData = await exRes.json();
+                            if (exData.credential_string) {
+                                const current = agyCredentialsTextarea.value.trim();
+                                const newCreds = exData.credential_string;
+                                if (current.includes(newCreds)) {
+                                    showAlert('Antigravity Notice', 'This account is already in your credentials list.', 'info');
+                                } else {
+                                    agyCredentialsTextarea.value = current ? current + '\n' + newCreds : newCreds;
+                                    showAlert('Antigravity Success', 'Antigravity account connected and added to credentials list!', 'success');
+                                }
+                            } else {
+                                showAlert('Antigravity Error', 'Exchange failed: ' + (exData.error || 'Unknown error'), 'error');
+                            }
+                        }
+                    };
+                } catch (error) {
+                    showAlert('Antigravity Error', 'Error starting OAuth: ' + error.message, 'error');
+                }
+            });
+        }
+
+        if (agyManualExchangeBtn) {
+            agyManualExchangeBtn.addEventListener('click', async () => {
+                const input = agyManualCodeInput.value.trim();
+                if (!input) return;
+
+                let code = input;
+                if (input.includes('code=')) {
+                    try {
+                        const url = new URL(input.startsWith('http') ? input : 'http://localhost?' + input);
+                        code = url.searchParams.get('code') || input;
+                    } catch (e) {}
+                }
+
+                const clientId = agyClientIdInput.value.trim() || '1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com';
+                const clientSecret = agyClientSecretInput.value.trim() || 'GOCSPX-K5FWR486LdLJ1mLB8sXC4z6qDAf';
+
+                try {
+                    const exRes = await fetch('/api/oauth-exchange', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ 
+                            code, 
+                            client_id: clientId, 
+                            client_secret: clientSecret, 
+                            redirect_uri: REDIRECT_URI,
+                            isAntigravity: true
+                        })
+                    });
+                    const exData = await exRes.json();
+                    if (exData.credential_string) {
+                        const current = agyCredentialsTextarea.value.trim();
+                        const newCreds = exData.credential_string;
+                        if (current.includes(newCreds)) {
+                            showAlert('Antigravity Notice', 'This account is already in your credentials list.', 'info');
+                        } else {
+                            agyCredentialsTextarea.value = current ? current + '\n' + newCreds : newCreds;
+                            showAlert('Antigravity Success', 'Antigravity account exchanged and added successfully!', 'success');
+                            agyManualCodeInput.value = '';
+                        }
+                    } else {
+                        showAlert('Antigravity Error', 'Exchange failed: ' + (exData.error || 'Unknown error'), 'error');
+                    }
+                } catch (error) {
+                    showAlert('Antigravity Error', 'Error exchanging code: ' + error.message, 'error');
+                }
+            });
+        }
+
+        if (antigravityForm) {
+            antigravityForm.addEventListener('submit', async (event) => {
+                event.preventDefault();
+                const submitBtn = antigravityForm.querySelector('button[type="submit"]');
+                setButtonLoading(submitBtn, true, 'Saving Credentials...');
+                const accessToken = agyAccessTokenInput.value.trim();
+                const agyCredentials = agyCredentialsTextarea.value.trim();
+                const enableLogging = document.getElementById('agyEnableLogging').checked;
+                const enablePruning = document.getElementById('agyEnablePruning').checked;
+
+                agyResultDiv.style.display = 'none';
+                agyResultDiv.className = '';
+
+                try {
+                    const response = await fetch('/api/antigravity-credentials', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            access_token: accessToken,
+                            antigravity_credentials: agyCredentials,
+                            enable_logging: enableLogging,
+                            enable_pruning: enablePruning
+                        })
+                    });
+
+                    const data = await response.json();
+                    if (!response.ok) throw new Error(data.error || 'An unknown error occurred.');
+
+                    while (agyResultDiv.firstChild) agyResultDiv.removeChild(agyResultDiv.firstChild);
+
+                    const baseUrl = window.location.origin;
+                    const openAIUrl = `${baseUrl}/chat/completions`;
+
+                    const h2 = document.createElement('h2');
+                    h2.textContent = 'Success!';
+                    agyResultDiv.appendChild(h2);
+
+                    const p1 = document.createElement('p');
+                    p1.textContent = 'Antigravity credentials saved for Access Token:';
+                    agyResultDiv.appendChild(p1);
+
+                    const pCode = document.createElement('p');
+                    const code = document.createElement('code');
+                    code.textContent = data.access_token;
+                    pCode.appendChild(code);
+                    agyResultDiv.appendChild(pCode);
+
+                    loadTokenDropdown('antigravity', data.access_token);
+
+                } catch (error) {
+                    agyResultDiv.className = 'error';
+                    agyResultDiv.innerHTML = '';
+                    const strong = document.createElement('strong');
+                    strong.textContent = 'Error: ';
+                    agyResultDiv.appendChild(strong);
+                    agyResultDiv.appendChild(document.createTextNode(error.message));
+                } finally {
+                    setButtonLoading(submitBtn, false);
+                }
+
+                agyResultDiv.style.display = 'block';
+            });
+        }
+
+        if (document.getElementById('agyDeleteButton')) {
+            document.getElementById('agyDeleteButton').addEventListener('click', async () => {
+                const accessToken = agyAccessTokenInput.value.trim();
+                if (!accessToken) {
+                    showAlert('Warning', 'Please enter an Access Token to delete.', 'error');
+                    return;
+                }
+
+                const confirmed = await showConfirm('Delete Antigravity Credentials', `Are you sure you want to delete all Antigravity credentials for the token "${accessToken}"? This action cannot be undone.`);
+                if (!confirmed) return;
+
+                agyResultDiv.style.display = 'none';
+                agyResultDiv.className = '';
+
+                try {
+                    const response = await fetch('/api/antigravity-credentials', {
+                        method: 'DELETE',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-Access-Token': accessToken
+                        }
+                    });
+
+                    const data = await response.json();
+                    if (!response.ok) throw new Error(data.error || data.message || 'An unknown error occurred.');
+
+                    while (agyResultDiv.firstChild) agyResultDiv.removeChild(agyResultDiv.firstChild);
+
+                    const strong = document.createElement('strong');
+                    strong.textContent = 'Success: ';
+                    agyResultDiv.appendChild(strong);
+                    agyResultDiv.appendChild(document.createTextNode(data.message));
+
+                    agyAccessTokenInput.value = '';
+                    agyCredentialsTextarea.value = '';
+                    loadTokenDropdown('antigravity');
+
+                } catch (error) {
+                    agyResultDiv.className = 'error';
+                    while (agyResultDiv.firstChild) agyResultDiv.removeChild(agyResultDiv.firstChild);
+                    const strong = document.createElement('strong');
+                    strong.textContent = 'Error: ';
+                    agyResultDiv.appendChild(strong);
+                    agyResultDiv.appendChild(document.createTextNode(error.message));
+                }
+
+                agyResultDiv.style.display = 'block';
+            });
+        }
 
         // Admin Management Logic
         const adminEmailSpan = document.getElementById('admin-email');

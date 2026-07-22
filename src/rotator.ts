@@ -9,9 +9,9 @@ import { handleClaude } from './utils/claude';
 import { handleGemini } from './utils/gemini';
 import { proxyRequest } from './utils/proxy';
 import { SystemContext } from './utils/context';
-import { createErrorResponse, Protocol } from './utils/errors';
+import { createErrorResponse, Protocol, JSON_HEADERS } from './utils/errors';
 import { StorageHelper } from './utils/storage';
-import { getStandardRotationIndex, parseCredentials } from './utils/credentials';
+import { getStandardRotationIndex, parseCredentials, parseCsvList } from './utils/credentials';
 import { sendInvalidTokenEmail, sendExhaustedEmail } from './utils/email';
 import { getOAuthAccessToken, parseOAuthCredentials, discoverProjectId, saveDiscoveredProjectId, fetchAvailableModelsForToken } from './utils/oauth';
 import { writeCombinedLog } from './utils/logger';
@@ -61,12 +61,17 @@ export class KeyRotator {
 	}
 
 	// In-memory index tracking for perfect round-robin under high load
+	private cachedGeminiApiBaseUrls: string[] | null = null;
 	private currentKeyIndex: number | undefined = undefined;
 	private currentOauthIndex: number | undefined = undefined;
+	private currentAntigravityIndex: number | undefined = undefined;
 	private initPromise: Promise<void> | null = null;
 
-	private async ensureInitialized(userAccessToken: string, dbKeyIndex: number, dbOauthIndex: number) {
-		if (this.currentKeyIndex !== undefined && this.currentOauthIndex !== undefined) {
+	private async ensureInitialized(userAccessToken: string, dbKeyIndex: number, dbOauthIndex: number, dbAntigravityIndex: number = 0) {
+		if (!this.ctx.env.DB) {
+			throw new Error("D1 Database binding 'DB' is missing in wrangler config or environment.");
+		}
+		if (this.currentKeyIndex !== undefined && this.currentOauthIndex !== undefined && this.currentAntigravityIndex !== undefined) {
 			return;
 		}
 		if (!this.initPromise) {
@@ -84,6 +89,13 @@ export class KeyRotator {
 					await this.storage.setUserOauthIndex(userAccessToken, oauthIndex);
 				}
 				this.currentOauthIndex = oauthIndex;
+
+				let antigravityIndex = await this.storage.get<number>(`antigravity_index_${userAccessToken}`);
+				if (antigravityIndex === undefined) {
+					antigravityIndex = dbAntigravityIndex;
+					await this.storage.put(`antigravity_index_${userAccessToken}`, antigravityIndex);
+				}
+				this.currentAntigravityIndex = antigravityIndex;
 
 				let syncCount = await this.storage.get<number>(`sync_count_${userAccessToken}`);
 				this.requestCountSinceSync = syncCount || 0;
@@ -731,8 +743,12 @@ export class KeyRotator {
 			endpoints.push(this.ctx.orgGeminiApiBaseUrl);
 		}
 		if (this.ctx.env.GEMINI_API_BASE_URL) {
-			const urls = this.ctx.env.GEMINI_API_BASE_URL.split(',').map(url => url.trim()).filter(Boolean);
-			endpoints.push(...urls);
+			if (!this.cachedGeminiApiBaseUrls) {
+				this.cachedGeminiApiBaseUrls = this.ctx.env.GEMINI_API_BASE_URL.split(',')
+					.map(url => url.trim())
+					.filter(Boolean);
+			}
+			endpoints.push(...this.cachedGeminiApiBaseUrls);
 		}
 
 		if (endpoints.length === 0) {
@@ -1056,17 +1072,17 @@ export class KeyRotator {
 			if (!db) return;
 
 			// Retrieve all active credentials rows (use access_token as key instead of non-existent id column)
-			const allRows = await db.prepare('SELECT access_token, oauth_credentials, oauth_key_states FROM api_credentials').all();
+			const allRows = await db.prepare('SELECT access_token, oauth_credentials, oauth_key_states FROM api_credentials').all<{ access_token: string, oauth_credentials: string, oauth_key_states: string }>();
 			const results = allRows.results || [];
 
 			for (const row of results) {
 				const access_token = row.access_token as string || '';
 				const oauth_credentials = row.oauth_credentials as string || '';
-				const oauth_key_states = JSON.parse(row.oauth_key_states || '[]') as any[];
+				const oauth_key_states = JSON.parse(row.oauth_key_states || '[]') as KeyState[];
 
 				if (!oauth_credentials) continue;
 
-				const oauthParts = oauth_credentials.split(',').map(p => p.trim()).filter(p => p);
+				const oauthParts = parseCsvList(oauth_credentials);
 				let updatedOauthKeyStates = [...oauth_key_states];
 				
 				// Pad updatedOauthKeyStates to match oauthParts length
@@ -1203,6 +1219,9 @@ export class KeyRotator {
 
 	private async cleanupExpiredImages(): Promise<void> {
 		try {
+			if (!this.storage.storage || typeof this.storage.storage.list !== 'function') {
+				return;
+			}
 			const expiries = await this.storage.storage.list({ prefix: 'img_expiry_' });
 			const now = Date.now();
 			for (const [key, expiry] of expiries) {
@@ -1217,94 +1236,43 @@ export class KeyRotator {
 		}
 	}
 
-	async fetch(request: Request): Promise<Response> {
-		const startTime = Date.now();
-		let savedTokensCount = 0;
-		const clonedRequest = request.clone();
-		const requestUrl = new URL(request.url);
-		const userAccessToken = request.headers.get('X-Access-Token');
-		const authMode = request.headers.get('X-Auth-Mode');
-		const protocol = authMode as Protocol;
-		const enablePruningHeader = request.headers.get('X-Enable-Pruning');
-		let enablePruning = true;
+	private async handleImageRetrieve(requestUrl: URL, protocol: Protocol): Promise<Response | null> {
+		const imageId = requestUrl.searchParams.get('id');
+		if (!imageId) return createErrorResponse('Missing image ID', 400, protocol);
 
-		let cacheId: string | undefined;
-		let requestBodyJson: any = null;
-		if (request.method === 'POST') {
-			try {
-				requestBodyJson = await clonedRequest.clone().json();
-				if (requestBodyJson) {
-					cacheId = requestBodyJson.cachedContent;
-				}
-			} catch (e) {
-				// Ignore
-			}
-		}
-		const sessionId = request.headers.get('X-Session-ID') || request.headers.get('X-Sticky-Session') || cacheId;
-
-		// Check for Exact-Match Cache on non-streaming POST completions
-		let cacheHash: string | null = null;
-		if (request.method === 'POST' && requestBodyJson) {
-			try {
-				if (!requestBodyJson.stream) {
-					const pathname = requestUrl.pathname;
-					if (pathname.includes('/completions') || pathname.includes('/messages') || pathname.includes(':generateContent')) {
-						const cacheKey = `${pathname}|${JSON.stringify(requestBodyJson)}`;
-						cacheHash = await sha256Hex(cacheKey);
-						
-						const cached = this.getExactMatchCache(cacheHash);
-						if (cached) {
-							console.log(`Durable Object Exact-Match Cache Hit for hash ${cacheHash}!`);
-							return new Response(cached.body, {
-								status: cached.status,
-								headers: cached.headers
-							});
-						}
-					}
-				}
-			} catch (e) {
-				// Ignore
-			}
+		const expiry = await this.storage.get<number>(`img_expiry_${imageId}`);
+		if (expiry && Date.now() > expiry) {
+			// Expired: delete asynchronously
+			this.ctx.state.waitUntil(this.storage.delete(`img_data_${imageId}`));
+			this.ctx.state.waitUntil(this.storage.delete(`img_expiry_${imageId}`));
+			return createErrorResponse('Image expired', 410, protocol);
 		}
 
-		// Run background garbage collection for expired images every 30 minutes
-		if (Date.now() - this.lastCleanupTime > 1800000) {
-			this.lastCleanupTime = Date.now();
-			this.ctx.state.waitUntil(this.cleanupExpiredImages());
+		const imgBase64 = await this.storage.get<string>(`img_data_${imageId}`);
+		if (!imgBase64) return createErrorResponse('Image not found', 404, protocol);
+
+		// Convert Base64 back to binary data safely
+		const binaryString = atob(imgBase64);
+		const len = binaryString.length;
+		const bytes = new Uint8Array(len);
+		for (let i = 0; i < len; i++) {
+			bytes[i] = binaryString.charCodeAt(i);
 		}
 
-		// Handle image retrieve requests (Proxy endpoint for DALL-E Imagen)
-		if (requestUrl.pathname === '/api/images/retrieve' && request.method === 'GET') {
-			const imageId = requestUrl.searchParams.get('id');
-			if (!imageId) return createErrorResponse('Missing image ID', 400, protocol);
-
-			const expiry = await this.storage.get<number>(`img_expiry_${imageId}`);
-			if (expiry && Date.now() > expiry) {
-				// Expired: delete asynchronously
-				this.ctx.state.waitUntil(this.storage.delete(`img_data_${imageId}`));
-				this.ctx.state.waitUntil(this.storage.delete(`img_expiry_${imageId}`));
-				return createErrorResponse('Image expired', 410, protocol);
+		return new Response(bytes.buffer, {
+			headers: {
+				'Content-Type': 'image/jpeg',
+				'Cache-Control': 'public, max-age=3600'
 			}
+		});
+	}
 
-			const imgBase64 = await this.storage.get<string>(`img_data_${imageId}`);
-			if (!imgBase64) return createErrorResponse('Image not found', 404, protocol);
-
-			// Convert Base64 back to binary data safely
-			const binaryString = atob(imgBase64);
-			const len = binaryString.length;
-			const bytes = new Uint8Array(len);
-			for (let i = 0; i < len; i++) {
-				bytes[i] = binaryString.charCodeAt(i);
-			}
-
-			return new Response(bytes.buffer, {
-				headers: {
-					'Content-Type': 'image/jpeg',
-					'Cache-Control': 'public, max-age=3600'
-				}
-			});
-		}
-
+		private async handleAdminRequest(
+		requestUrl: URL,
+		request: Request,
+		userAccessToken: string | null,
+		protocol: Protocol
+	): Promise<Response | null> {
 		// Handle key diagnostic requests (Internal/Admin only)
 		if (requestUrl.pathname === '/admin/key-diagnose' && request.method === 'POST') {
 			if (!userAccessToken) return createErrorResponse('Unauthorized', 401, protocol);
@@ -1380,14 +1348,14 @@ export class KeyRotator {
 							// Ignore
 						}
 						return new Response(JSON.stringify({ success: true, status: response.status, latency, greeting, model: modelToUse }), {
-							headers: { 'Content-Type': 'application/json' }
+							headers: JSON_HEADERS
 						});
 					} else {
 						const errorJson = await response.json<any>().catch(() => ({}));
 						const errMsg = errorJson?.error?.message || 'Upstream returned error';
 						return new Response(JSON.stringify({ success: false, status: response.status, latency, error: errMsg }), {
 							status: response.status,
-							headers: { 'Content-Type': 'application/json' }
+							headers: JSON_HEADERS
 						});
 					}
 				} else {
@@ -1414,14 +1382,14 @@ export class KeyRotator {
 							// Ignore
 						}
 						return new Response(JSON.stringify({ success: true, status: response.status, latency, greeting, model: modelToUse }), {
-							headers: { 'Content-Type': 'application/json' }
+							headers: JSON_HEADERS
 						});
 					} else {
 						const errorJson = await response.json<any>().catch(() => ({}));
 						const errMsg = errorJson?.error?.message || 'Upstream returned error';
 						return new Response(JSON.stringify({ success: false, status: response.status, latency, error: errMsg }), {
 							status: response.status,
-							headers: { 'Content-Type': 'application/json' }
+							headers: JSON_HEADERS
 						});
 					}
 				}
@@ -1429,7 +1397,7 @@ export class KeyRotator {
 				const latency = Date.now() - startTime;
 				return new Response(JSON.stringify({ success: false, status: 500, latency, error: e.message }), {
 					status: 500,
-					headers: { 'Content-Type': 'application/json' }
+					headers: JSON_HEADERS
 				});
 			}
 		}
@@ -1448,7 +1416,7 @@ export class KeyRotator {
 				await this.storage.delete(`sync_count_${userAccessToken}`);
 			})());
 			return new Response(JSON.stringify({ success: true }), {
-				headers: { 'Content-Type': 'application/json' },
+				headers: JSON_HEADERS,
 			});
 		}
 
@@ -1457,19 +1425,21 @@ export class KeyRotator {
 			if (!userAccessToken) return createErrorResponse('Unauthorized', 401, protocol);
 
 			const stmt = this.ctx.env.DB.prepare(
-				'SELECT api_keys, key_states, oauth_credentials, oauth_key_states FROM api_credentials WHERE access_token = ?'
+				'SELECT api_keys, key_states, oauth_credentials, oauth_key_states, antigravity_credentials, antigravity_key_states FROM api_credentials WHERE access_token = ?'
 			);
 			const dbResult = await stmt.bind(userAccessToken).first<any>();
 			if (!dbResult) return createErrorResponse('Not Found', 404, protocol);
 
 			return new Response(
 				JSON.stringify({
-					api_keys: dbResult.api_keys ? dbResult.api_keys.split(',') : [],
+					api_keys: parseCsvList(dbResult.api_keys),
 					key_states: JSON.parse(dbResult.key_states || '[]'),
-					oauth_credentials: dbResult.oauth_credentials ? dbResult.oauth_credentials.split(',') : [],
+					oauth_credentials: parseCsvList(dbResult.oauth_credentials),
 					oauth_key_states: JSON.parse(dbResult.oauth_key_states || '[]'),
+					antigravity_credentials: parseCsvList(dbResult.antigravity_credentials),
+					antigravity_key_states: JSON.parse(dbResult.antigravity_key_states || '[]'),
 				}),
-				{ headers: { 'Content-Type': 'application/json' } }
+				{ headers: JSON_HEADERS }
 			);
 		}
 
@@ -1477,25 +1447,87 @@ export class KeyRotator {
 		if (requestUrl.pathname === '/admin/key-models' && request.method === 'POST') {
 			if (!userAccessToken) return createErrorResponse('Unauthorized', 401, protocol);
 
-			const { key, isOAuth } = (await request.json()) as { key: string; isOAuth: boolean };
+			const { key, isOAuth, isAntigravity } = (await request.json()) as { key: string; isOAuth?: boolean; isAntigravity?: boolean };
 			if (!key) return createErrorResponse('Key is required', 400, protocol);
 
 			try {
-				if (isOAuth) {
-					const creds = parseOAuthCredentials(key, this.ctx.env.OAUTH_CLIENT_ID, this.ctx.env.OAUTH_CLIENT_SECRET);
+				if (isAntigravity) {
+					const creds = parseAntigravityCredentials(key);
 					if (!creds.refresh_token) {
-						return new Response(JSON.stringify({ error: 'Invalid OAuth credentials format' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+						return new Response(JSON.stringify({ error: 'Invalid Antigravity credentials format' }), { status: 400, headers: JSON_HEADERS });
 					}
 					const activeAccessToken = await getOAuthAccessToken(this.ctx.state, creds, this.ctx);
 					if (!activeAccessToken) {
-						return new Response(JSON.stringify({ error: 'Failed to refresh OAuth token' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+						return new Response(JSON.stringify({ error: 'Failed to refresh Antigravity token' }), { status: 400, headers: JSON_HEADERS });
 					}
 					let projectId = creds.project_id;
 					if (!projectId) {
 						projectId = await discoverProjectId(activeAccessToken, creds.email);
 					}
 					if (!projectId) {
-						return new Response(JSON.stringify({ error: 'Failed to discover Google Cloud Project ID' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+						return new Response(JSON.stringify({ error: 'Failed to discover Google Cloud Project ID' }), { status: 400, headers: JSON_HEADERS });
+					}
+
+					const buckets = await fetchAvailableModelsForToken(activeAccessToken, projectId);
+
+					if (buckets.length > 0) {
+						const stmt = this.ctx.env.DB.prepare(
+							'SELECT antigravity_credentials, antigravity_key_states FROM api_credentials WHERE access_token = ?'
+						);
+						const dbResult = await stmt.bind(userAccessToken).first<any>();
+						if (dbResult) {
+							const agy_credentials = dbResult.antigravity_credentials as string || '';
+							const agy_key_states = JSON.parse(dbResult.antigravity_key_states || '[]') as KeyState[];
+							const agyParts = parseCsvList(agy_credentials);
+							
+							const targetIndex = agyParts.indexOf(key.trim());
+							if (targetIndex !== -1) {
+								let updatedAgyKeyStates = [...agy_key_states];
+								while (updatedAgyKeyStates.length <= targetIndex) {
+									updatedAgyKeyStates.push({});
+								}
+
+								const newAvailableModels = buckets.map(b => b.modelId).filter(Boolean);
+								const oldAvailableModels = updatedAgyKeyStates[targetIndex].availableModels || [];
+								const availableModelsChanged = JSON.stringify(newAvailableModels.sort()) !== JSON.stringify([...oldAvailableModels].sort());
+
+								if (availableModelsChanged) {
+									updatedAgyKeyStates[targetIndex] = {
+										...updatedAgyKeyStates[targetIndex],
+										availableModels: newAvailableModels,
+										lastModelSyncTime: Date.now()
+									};
+
+									await this.ctx.env.DB.prepare('UPDATE api_credentials SET antigravity_key_states = ? WHERE access_token = ?')
+										.bind(JSON.stringify(updatedAgyKeyStates), userAccessToken)
+										.run();
+
+									this.cachedCredentials = null;
+								}
+							}
+						}
+					}
+
+					const models = buckets
+						.filter((b: any) => b.modelId)
+						.map((b: any) => `${b.modelId} (Remaining: ${b.remainingAmount || 'unknown'})`);
+
+					return new Response(JSON.stringify({ models }), { headers: JSON_HEADERS });
+				} else if (isOAuth) {
+					const creds = parseOAuthCredentials(key, this.ctx.env.OAUTH_CLIENT_ID, this.ctx.env.OAUTH_CLIENT_SECRET);
+					if (!creds.refresh_token) {
+						return new Response(JSON.stringify({ error: 'Invalid OAuth credentials format' }), { status: 400, headers: JSON_HEADERS });
+					}
+					const activeAccessToken = await getOAuthAccessToken(this.ctx.state, creds, this.ctx);
+					if (!activeAccessToken) {
+						return new Response(JSON.stringify({ error: 'Failed to refresh OAuth token' }), { status: 400, headers: JSON_HEADERS });
+					}
+					let projectId = creds.project_id;
+					if (!projectId) {
+						projectId = await discoverProjectId(activeAccessToken, creds.email);
+					}
+					if (!projectId) {
+						return new Response(JSON.stringify({ error: 'Failed to discover Google Cloud Project ID' }), { status: 400, headers: JSON_HEADERS });
 					}
 
 					// Use the DRY-ed official helper to fetch model buckets
@@ -1509,8 +1541,8 @@ export class KeyRotator {
 						const dbResult = await stmt.bind(userAccessToken).first<any>();
 						if (dbResult) {
 							const oauth_credentials = dbResult.oauth_credentials as string || '';
-							const oauth_key_states = JSON.parse(dbResult.oauth_key_states || '[]') as any[];
-							const oauthParts = oauth_credentials.split(',').map(p => p.trim()).filter(p => p);
+							const oauth_key_states = JSON.parse(dbResult.oauth_key_states || '[]') as KeyState[];
+							const oauthParts = parseCsvList(oauth_credentials);
 							
 							const targetIndex = oauthParts.indexOf(key.trim());
 							if (targetIndex !== -1) {
@@ -1547,19 +1579,19 @@ export class KeyRotator {
 						.filter((b: any) => b.modelId)
 						.map((b: any) => `${b.modelId} (Remaining: ${b.remainingAmount || 'unknown'})`);
 
-					return new Response(JSON.stringify({ models }), { headers: { 'Content-Type': 'application/json' } });
+					return new Response(JSON.stringify({ models }), { headers: JSON_HEADERS });
 				} else {
 					// Fetch standard API Key models
 					const response = await fetch(`https://generativelanguage.googleapis.com/v1/models?key=${key}`);
 					if (!response.ok) {
-						return new Response(JSON.stringify({ error: `Google API Error: ${response.statusText}` }), { status: response.status, headers: { 'Content-Type': 'application/json' } });
+						return new Response(JSON.stringify({ error: `Google API Error: ${response.statusText}` }), { status: response.status, headers: JSON_HEADERS });
 					}
 					const data = await response.json() as { models?: { name: string }[] };
 					const models = (data.models || []).map(m => m.name.replace('models/', ''));
-					return new Response(JSON.stringify({ models }), { headers: { 'Content-Type': 'application/json' } });
+					return new Response(JSON.stringify({ models }), { headers: JSON_HEADERS });
 				}
 			} catch (err: any) {
-				return new Response(JSON.stringify({ error: err.message || 'Unknown error occurred' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+				return new Response(JSON.stringify({ error: err.message || 'Unknown error occurred' }), { status: 500, headers: JSON_HEADERS });
 			}
 		}
 
@@ -1567,18 +1599,32 @@ export class KeyRotator {
 		if (requestUrl.pathname === '/admin/reset-key-health' && request.method === 'POST') {
 			if (!userAccessToken) return createErrorResponse('Unauthorized', 401, protocol);
 
-			const { key, isOAuth } = (await request.json()) as { key: string; isOAuth: boolean };
+			const { key, isOAuth, isAntigravity } = (await request.json()) as { key: string; isOAuth?: boolean; isAntigravity?: boolean };
 			if (!key) return createErrorResponse('Key is required', 400, protocol);
 
 			const stmt = this.ctx.env.DB.prepare(
-				'SELECT api_keys, key_states, oauth_credentials, oauth_key_states FROM api_credentials WHERE access_token = ?'
+				'SELECT api_keys, key_states, oauth_credentials, oauth_key_states, antigravity_credentials, antigravity_key_states FROM api_credentials WHERE access_token = ?'
 			);
 			const dbResult = await stmt.bind(userAccessToken).first<any>();
 			if (!dbResult) return createErrorResponse('Not Found', 404, protocol);
 
-			const { apiKeys, keyStates, oauthCredentialsList, oauthKeyStates } = parseCredentials(dbResult);
+			const { apiKeys, keyStates, oauthCredentialsList, oauthKeyStates, antigravityCredentialsList, antigravityKeyStates } = parseCredentials(dbResult);
 
-			if (isOAuth) {
+			if (isAntigravity) {
+				const index = antigravityCredentialsList.indexOf(key);
+				if (index !== -1 && antigravityKeyStates[index]) {
+					const s = { ...antigravityKeyStates[index] };
+					delete (s as any).invalid;
+					delete (s as any).exhaustedUntil;
+					delete (s as any).modelUnavailable;
+					antigravityKeyStates[index] = s;
+					await this.ctx.env.DB.prepare(
+						'UPDATE api_credentials SET antigravity_key_states = ? WHERE access_token = ?'
+					)
+						.bind(JSON.stringify(antigravityKeyStates), userAccessToken)
+						.run();
+				}
+			} else if (isOAuth) {
 				const index = oauthCredentialsList.indexOf(key);
 				if (index !== -1 && oauthKeyStates[index]) {
 					const s = { ...oauthKeyStates[index] };
@@ -1612,8 +1658,79 @@ export class KeyRotator {
 			this.cachedCredentials = null;
 
 			return new Response(JSON.stringify({ success: true }), {
-				headers: { 'Content-Type': 'application/json' },
+				headers: JSON_HEADERS,
 			});
+		}
+
+		return null;
+	}
+
+async fetch(request: Request): Promise<Response> {
+		const startTime = Date.now();
+		let savedTokensCount = 0;
+		const clonedRequest = request.clone();
+		const requestUrl = new URL(request.url);
+		const userAccessToken = request.headers.get('X-Access-Token');
+		const authMode = request.headers.get('X-Auth-Mode');
+		const protocol = authMode as Protocol;
+		const enablePruningHeader = request.headers.get('X-Enable-Pruning');
+		let enablePruning = true;
+
+		let cacheId: string | undefined;
+		let requestBodyJson: any = null;
+		if (request.method === 'POST') {
+			try {
+				requestBodyJson = await clonedRequest.clone().json();
+				if (requestBodyJson) {
+					cacheId = requestBodyJson.cachedContent;
+				}
+			} catch (e) {
+				// Ignore
+			}
+		}
+		const sessionId = request.headers.get('X-Session-ID') || request.headers.get('X-Sticky-Session') || cacheId;
+
+		// Check for Exact-Match Cache on non-streaming POST completions
+		let cacheHash: string | null = null;
+		if (request.method === 'POST' && requestBodyJson) {
+			try {
+				if (!requestBodyJson.stream) {
+					const pathname = requestUrl.pathname;
+					if (pathname.includes('/completions') || pathname.includes('/messages') || pathname.includes(':generateContent')) {
+						const cacheKey = `${pathname}|${JSON.stringify(requestBodyJson)}`;
+						cacheHash = await sha256Hex(cacheKey);
+						
+						const cached = this.getExactMatchCache(cacheHash);
+						if (cached) {
+							console.log(`Durable Object Exact-Match Cache Hit for hash ${cacheHash}!`);
+							return new Response(cached.body, {
+								status: cached.status,
+								headers: cached.headers
+							});
+						}
+					}
+				}
+			} catch (e) {
+				// Ignore
+			}
+		}
+
+		// Run background garbage collection for expired images every 30 minutes
+		if (Date.now() - this.lastCleanupTime > 1800000) {
+			this.lastCleanupTime = Date.now();
+			this.ctx.state.waitUntil(this.cleanupExpiredImages());
+		}
+
+		// Handle image retrieve requests (Proxy endpoint for DALL-E Imagen)
+		if (requestUrl.pathname === '/api/images/retrieve' && request.method === 'GET') {
+			const imgRes = await this.handleImageRetrieve(requestUrl, protocol);
+			if (imgRes) return imgRes;
+		}
+
+		  // Handle admin requests
+		if (requestUrl.pathname.startsWith('/admin/')) {
+			const adminRes = await this.handleAdminRequest(requestUrl, request, userAccessToken, protocol);
+			if (adminRes) return adminRes;
 		}
 
 		if (!userAccessToken) {
@@ -1634,9 +1751,12 @@ export class KeyRotator {
 		// Handle /oauth/models explicitly to force OAuth mode
 		if (pathname.includes('/oauth/models')) {
 			resolved.useOAuth = true;
+		} else if (pathname.includes('/antigravity/models')) {
+			resolved.useAntigravity = true;
 		}
 		const model = resolved.model;
 		const isOAuthMode = resolved.useOAuth;
+		const isAntigravityMode = resolved.useAntigravity;
 
 		let dbResult: ApiCredentials | null = null;
 		const now = Date.now();
@@ -1649,7 +1769,7 @@ export class KeyRotator {
 				this.ctx.state.waitUntil((async () => {
 					try {
 						const stmt = this.ctx.env.DB.prepare(
-							'SELECT api_keys, current_key_index, key_states, oauth_credentials, current_oauth_index, oauth_key_states, enable_logging, enable_pruning FROM api_credentials WHERE access_token = ?'
+							'SELECT api_keys, current_key_index, key_states, oauth_credentials, current_oauth_index, oauth_key_states, antigravity_credentials, current_antigravity_index, antigravity_key_states, enable_logging, enable_pruning FROM api_credentials WHERE access_token = ?'
 						);
 						const freshResult = await stmt.bind(userAccessToken).first<ApiCredentials>();
 						if (freshResult) {
@@ -1665,7 +1785,7 @@ export class KeyRotator {
 			}
 		} else {
 			const stmt = this.ctx.env.DB.prepare(
-				'SELECT api_keys, current_key_index, key_states, oauth_credentials, current_oauth_index, oauth_key_states, enable_logging, enable_pruning FROM api_credentials WHERE access_token = ?'
+				'SELECT api_keys, current_key_index, key_states, oauth_credentials, current_oauth_index, oauth_key_states, antigravity_credentials, current_antigravity_index, antigravity_key_states, enable_logging, enable_pruning FROM api_credentials WHERE access_token = ?'
 			);
 			dbResult = await stmt.bind(userAccessToken).first<ApiCredentials>();
 			if (dbResult) {
@@ -1689,52 +1809,99 @@ export class KeyRotator {
 			keyStates,
 			oauthCredentialsList,
 			oauthKeyStates,
+			antigravityCredentialsList,
+			antigravityKeyStates,
 			currentKeyIndex: dbKeyIndex,
 			currentOauthIndex: dbOauthIndex,
+			currentAntigravityIndex: dbAntigravityIndex,
 		} = parseCredentials(dbResult);
 
 		// Initialize in-memory index tracking safely with no race conditions on first load
-		await this.ensureInitialized(userAccessToken, dbKeyIndex, dbOauthIndex);
+		await this.ensureInitialized(userAccessToken, dbKeyIndex, dbOauthIndex, dbAntigravityIndex);
 		let currentKeyIndex = this.currentKeyIndex!;
 		let currentOauthIndex = this.currentOauthIndex!;
+		let currentAntigravityIndex = this.currentAntigravityIndex!;
 
 		const modelForExhaustion = model || '_general_';
 
 		let apiKey = '';
 		let keyIndexToUse: number | null = null;
 		let oauthIndexToUse: number | null = null;
+		let antigravityIndexToUse: number | null = null;
 		let effectivelyOAuth = isOAuthMode;
+		let effectivelyAntigravity = isAntigravityMode;
 
 		let isStickyUsed = false;
 		if (sessionId && this.sessionKeyMap.has(sessionId)) {
 			const stickyKey = this.sessionKeyMap.get(sessionId)!;
-			const idx = apiKeys.indexOf(stickyKey);
-			if (idx !== -1) {
-				const keyState = keyStates[idx];
-				const isHealthy = !keyState?.invalid && (!keyState?.exhaustedUntil || !keyState.exhaustedUntil[modelForExhaustion] || Date.now() > (keyState.exhaustedUntil[modelForExhaustion] || 0)) && (!keyState?.exhaustedUntil || !keyState.exhaustedUntil['_general_'] || Date.now() > (keyState.exhaustedUntil['_general_'] || 0));
+			const agyIdx = antigravityCredentialsList.indexOf(stickyKey);
+			if (agyIdx !== -1) {
+				const agyState = antigravityKeyStates[agyIdx];
+				const isHealthy = !agyState?.invalid && (!agyState?.exhaustedUntil || !agyState.exhaustedUntil[modelForExhaustion] || Date.now() > (agyState.exhaustedUntil[modelForExhaustion] || 0)) && (!agyState?.exhaustedUntil || !agyState.exhaustedUntil['_general_'] || Date.now() > (agyState.exhaustedUntil['_general_'] || 0));
 				if (isHealthy) {
 					apiKey = stickyKey;
-					keyIndexToUse = idx;
+					antigravityIndexToUse = agyIdx;
+					effectivelyAntigravity = true;
 					effectivelyOAuth = false;
 					isStickyUsed = true;
 				}
 			} else {
-				const oauthIdx = oauthCredentialsList.indexOf(stickyKey);
-				if (oauthIdx !== -1) {
-					const oauthState = oauthKeyStates[oauthIdx];
-					const isHealthy = !oauthState?.invalid && (!oauthState?.exhaustedUntil || !oauthState.exhaustedUntil[modelForExhaustion] || Date.now() > (oauthState.exhaustedUntil[modelForExhaustion] || 0)) && (!oauthState?.exhaustedUntil || !oauthState.exhaustedUntil['_general_'] || Date.now() > (oauthState.exhaustedUntil['_general_'] || 0));
+				const idx = apiKeys.indexOf(stickyKey);
+				if (idx !== -1) {
+					const keyState = keyStates[idx];
+					const isHealthy = !keyState?.invalid && (!keyState?.exhaustedUntil || !keyState.exhaustedUntil[modelForExhaustion] || Date.now() > (keyState.exhaustedUntil[modelForExhaustion] || 0)) && (!keyState?.exhaustedUntil || !keyState.exhaustedUntil['_general_'] || Date.now() > (keyState.exhaustedUntil['_general_'] || 0));
 					if (isHealthy) {
 						apiKey = stickyKey;
-						oauthIndexToUse = oauthIdx;
-						effectivelyOAuth = true;
+						keyIndexToUse = idx;
+						effectivelyOAuth = false;
+						effectivelyAntigravity = false;
 						isStickyUsed = true;
+					}
+				} else {
+					const oauthIdx = oauthCredentialsList.indexOf(stickyKey);
+					if (oauthIdx !== -1) {
+						const oauthState = oauthKeyStates[oauthIdx];
+						const isHealthy = !oauthState?.invalid && (!oauthState?.exhaustedUntil || !oauthState.exhaustedUntil[modelForExhaustion] || Date.now() > (oauthState.exhaustedUntil[modelForExhaustion] || 0)) && (!oauthState?.exhaustedUntil || !oauthState.exhaustedUntil['_general_'] || Date.now() > (oauthState.exhaustedUntil['_general_'] || 0));
+						if (isHealthy) {
+							apiKey = stickyKey;
+							oauthIndexToUse = oauthIdx;
+							effectivelyOAuth = true;
+							effectivelyAntigravity = false;
+							isStickyUsed = true;
+						}
 					}
 				}
 			}
 		}
 
 		if (!isStickyUsed) {
-			if (isOAuthMode) {
+			if (isAntigravityMode) {
+				antigravityIndexToUse = getStandardRotationIndex(
+					antigravityCredentialsList,
+					currentAntigravityIndex,
+					antigravityKeyStates,
+					modelForExhaustion,
+					Date.now()
+				);
+
+				if (antigravityIndexToUse === null) {
+					if (antigravityCredentialsList.length > 0) {
+						return createErrorResponse(
+							'All Antigravity OAuth credentials for your account are currently exhausted. Please try again later.',
+							429,
+							protocol
+						);
+					}
+					return createErrorResponse('No Antigravity OAuth credentials configured for this account.', 401, protocol);
+				}
+				apiKey = antigravityCredentialsList[antigravityIndexToUse];
+				effectivelyAntigravity = true;
+				effectivelyOAuth = false;
+
+				const nextAgyIndex = (antigravityIndexToUse + 1) % antigravityCredentialsList.length;
+				this.currentAntigravityIndex = nextAgyIndex;
+				this.ctx.state.waitUntil(this.storage.put(`antigravity_index_${userAccessToken}`, nextAgyIndex));
+			} else if (isOAuthMode) {
 				oauthIndexToUse = getStandardRotationIndex(
 					oauthCredentialsList,
 					currentOauthIndex,
@@ -1941,6 +2108,27 @@ export class KeyRotator {
 						headers: req.headers,
 						body: JSON.stringify(bodyJson)
 					});
+				}
+
+				if (effectivelyAntigravity) {
+					return handleAntigravityCli(
+						req as any,
+						parseAntigravityCredentials(key),
+						this.ctx.state,
+						(r: Request, stream: boolean, token?: string) =>
+							proxyRequest(
+								r,
+								stream,
+								this.ctx.env.DB,
+								this.ctx.waitUntil.bind(this.ctx),
+								this.ctx.isLoggingEnabled,
+								token,
+								timeoutMs
+							),
+						mod,
+						this.ctx,
+						antigravityKeyStates
+					);
 				}
 
 				return handleGemini(
@@ -2339,8 +2527,8 @@ export class KeyRotator {
 		// Fully delegated logging check inside Durable Object
 		if (dbResult && dbResult.enable_logging === 1) {
 			const originalUrl = request.headers.get("X-Original-Url") || request.url;
-			const logRequest = new Request(originalUrl, clonedRequest);
-			this.ctx.state.waitUntil(writeCombinedLog(this.ctx.env, logRequest, response.clone(), startTime, userAccessToken || undefined));
+			const logRequest = new Request(originalUrl, clonedRequest as any);
+			this.ctx.state.waitUntil(writeCombinedLog(this.ctx.env as any, logRequest, response.clone(), startTime, userAccessToken || undefined));
 		}
 
 		return response;

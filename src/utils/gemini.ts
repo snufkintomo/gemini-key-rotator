@@ -1,7 +1,7 @@
 import { getOAuthAccessToken, discoverProjectId, parseOAuthCredentials, saveDiscoveredProjectId, fetchAvailableModelsForToken } from './oauth';
 import { parseStream, parseStreamFlush } from './streams';
 import { getGeminiModelForGemini, mapModelForInternalApi } from './models';
-import type { OAuthCredentials } from '../types';
+import type { OAuthCredentials, KeyState } from '../types';
 import { SystemContext } from './context';
 
 const API_VERSION = 'v1beta';
@@ -12,7 +12,7 @@ const CODE_ASSIST_HEADERS = {
 	'Client-Metadata': 'ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI',
 } as const;
 
-function generateUuid(): string {
+export function generateUuid(): string {
 	return crypto.randomUUID();
 }
 
@@ -51,7 +51,7 @@ export async function handleGeminiCli(
 	proxyRequest: (request: Request, isStreaming: boolean, accessToken?: string) => Promise<Response>,
 	model?: string,
 	ctx?: SystemContext,
-	oauthKeyStates: any[] = []
+	oauthKeyStates: KeyState[] = []
 ): Promise<Response> {
 	try {
 		const reqAny = request as any;
@@ -282,7 +282,7 @@ export async function handleGemini(
 	defaultClientId?: string,
 	defaultClientSecret?: string,
 	ctx?: SystemContext,
-	oauthKeyStates: any[] = []
+	oauthKeyStates: KeyState[] = []
 ): Promise<Response> {
 	const requestUrl = new URL(request.url);
 

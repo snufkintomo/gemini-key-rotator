@@ -1,6 +1,12 @@
 import { ApiCredentials, KeyState } from '../types';
 
+export function parseCsvList(str: string | undefined | null): string[] {
+	if (!str) return [];
+	return str.split(',').map((k) => k.trim()).filter(Boolean);
+}
+
 export function getStandardRotationIndex(
+
 	apiKeys: string[],
 	startingIndex: number,
 	states: KeyState[],
@@ -33,15 +39,15 @@ export interface ParsedCredentials {
 	keyStates: KeyState[];
 	oauthCredentialsList: string[];
 	oauthKeyStates: KeyState[];
+	antigravityCredentialsList: string[];
+	antigravityKeyStates: KeyState[];
 	currentKeyIndex: number;
 	currentOauthIndex: number;
+	currentAntigravityIndex: number;
 }
 
 export function parseCredentials(dbResult: ApiCredentials): ParsedCredentials {
-	const apiKeys = dbResult.api_keys
-		.split(',')
-		.map((k) => k.trim())
-		.filter((k) => k);
+	const apiKeys = parseCsvList(dbResult.api_keys);
 
 	let keyStates: KeyState[] = [];
 	try {
@@ -53,12 +59,7 @@ export function parseCredentials(dbResult: ApiCredentials): ParsedCredentials {
 		keyStates = apiKeys.map(() => ({}));
 	}
 
-	const oauthCredentialsList = dbResult.oauth_credentials
-		? dbResult.oauth_credentials
-				.split(',')
-				.map((k) => k.trim())
-				.filter((k) => k)
-		: [];
+	const oauthCredentialsList = parseCsvList(dbResult.oauth_credentials);
 
 	let oauthKeyStates: KeyState[] = [];
 	try {
@@ -70,12 +71,27 @@ export function parseCredentials(dbResult: ApiCredentials): ParsedCredentials {
 		oauthKeyStates = oauthCredentialsList.map(() => ({}));
 	}
 
+	const antigravityCredentialsList = parseCsvList(dbResult.antigravity_credentials);
+
+	let antigravityKeyStates: KeyState[] = [];
+	try {
+		antigravityKeyStates = dbResult.antigravity_key_states ? JSON.parse(dbResult.antigravity_key_states) : [];
+		if (antigravityKeyStates.length !== antigravityCredentialsList.length) {
+			antigravityKeyStates = antigravityCredentialsList.map(() => ({}));
+		}
+	} catch {
+		antigravityKeyStates = antigravityCredentialsList.map(() => ({}));
+	}
+
 	return {
 		apiKeys,
 		keyStates,
 		oauthCredentialsList,
 		oauthKeyStates,
+		antigravityCredentialsList,
+		antigravityKeyStates,
 		currentKeyIndex: dbResult.current_key_index || 0,
 		currentOauthIndex: dbResult.current_oauth_index || 0,
+		currentAntigravityIndex: dbResult.current_antigravity_index || 0,
 	};
 }

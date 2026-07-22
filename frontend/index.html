@@ -25,6 +25,7 @@
         <div class="tab-buttons">
             <button class="tab-button" data-tab="credentials-tab">API Keys</button>
             <button class="tab-button" data-tab="oauth-tab">OAuth Credentials</button>
+            <button class="tab-button" data-tab="antigravity-tab">Antigravity Keys</button>
             <button class="tab-button" data-tab="logs-tab">API Logs</button>
             <button class="tab-button" data-tab="stats-tab">Statistics</button>
             <button class="tab-button" data-tab="trends-tab">Trends</button>
@@ -135,6 +136,72 @@
             <div id="oauth-key-health" class="key-status-container" style="display: none;">
                 <h3>Current Credential Health</h3>
                 <div id="oauth-key-status-list" class="key-status-list"></div>
+            </div>
+        </div>
+
+        <!-- Antigravity Credentials Tab -->
+        <div id="antigravity-tab" class="tab-content">
+            <h2>Manage Antigravity OAuth Credentials</h2>
+            <p>Set up Antigravity OAuth credentials using official Google Cloud Code headers and isolated credential pools. Requests using <code>-agy</code> models (e.g. <code>gemini-2.5-pro-agy</code>) will automatically route to this pool.</p>
+
+            <form id="antigravityForm">
+                <label for="agyAccessTokenSelect">Access Token:</label><br>
+                <div style="display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 0.5rem;">
+                    <select id="agyAccessTokenSelect" style="width: 100%;">
+                        <option value="">-- Loading... --</option>
+                    </select>
+                    <input type="text" id="agyAccessToken" name="agyAccessToken" required placeholder="Custom Access Token (at least 10 chars)" style="display: none; width: 100%;">
+                </div>
+                <div style="margin-bottom: 1.5rem; display: flex; flex-wrap: wrap; gap: 1.5rem;">
+                    <label style="display: inline-flex; align-items: center; gap: 0.5rem; font-weight: 500; cursor: pointer; user-select: none;">
+                        <input type="checkbox" id="agyEnableLogging" style="width: auto; margin: 0;"> 
+                        Enable API Logging
+                    </label>
+                    <label style="display: inline-flex; align-items: center; gap: 0.5rem; font-weight: 500; cursor: pointer; user-select: none;">
+                        <input type="checkbox" id="agyEnablePruning" style="width: auto; margin: 0;"> 
+                        Enable Prompt Pruning
+                    </label>
+                </div>
+                
+                <div style="background: var(--code-bg); padding: 1.5rem; border-radius: 8px; border: 1px solid var(--border-color); margin-bottom: 1.5rem;">
+                    <h3 style="margin-top: 0;">Connect Antigravity Account</h3>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                        <div>
+                            <label for="agyClientId">Client ID:</label>
+                            <input type="text" id="agyClientId" value="1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com" placeholder="Antigravity OAuth Client ID">
+                        </div>
+                        <div>
+                            <label for="agyClientSecret">Client Secret:</label>
+                            <input type="text" id="agyClientSecret" value="GOCSPX-K5FWR486LdLJ1mLB8sXC4z6qDAf" placeholder="Antigravity OAuth Client Secret">
+                        </div>
+                    </div>
+                    <button type="button" id="agyConnectGoogleBtn" style="background-color: #6366f1;">🚀 Connect Antigravity Account</button>
+                    <p style="font-size: 0.85rem; color: #718096; margin-top: 0.5rem;">This will open a popup. If the redirect fails (localhost:8085), <strong>copy the full URL</strong> from the address bar and paste it below.</p>
+                    
+                    <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #e2e8f0;">
+                        <label for="agyManualCode">Manual Callback URL or Code:</label>
+                        <div style="display: flex; gap: 0.5rem;">
+                            <input type="text" id="agyManualCode" placeholder="Paste localhost URL or code here">
+                            <button type="button" id="agyManualExchangeBtn" style="width: auto; white-space: nowrap;">Exchange</button>
+                        </div>
+                    </div>
+                </div>
+
+                <label for="antigravityCredentials">Antigravity OAuth Credentials (One per line):</label>
+                <textarea id="antigravityCredentials" name="antigravityCredentials" required placeholder="client_id:client_secret:refresh_token:project_id:email"></textarea>
+                <br><br>
+                <div class="button-group">
+                    <button type="submit">Save Antigravity Credentials</button>
+                    <button type="button" id="agyDeleteButton">Clear Antigravity Credentials</button>
+                </div>
+            </form>
+
+            <div id="antigravityResult"></div>
+
+            <!-- Key Health Section for Antigravity -->
+            <div id="agy-key-health" class="key-status-container" style="display: none;">
+                <h3>Current Antigravity Credential Health</h3>
+                <div id="agy-key-status-list" class="key-status-list"></div>
             </div>
         </div>
 

@@ -8,6 +8,7 @@ import { sendZeroSuccessRateAlertEmail } from './utils/email';
 import { generatePKCE, getDerivedKey, verifyLogin } from './utils/session';
 import { logRequest, logResponse, writeCombinedLog } from './utils/logger';
 import { discoverProjectId } from './utils/oauth';
+import { ANTIGRAVITY_CLIENT_ID, ANTIGRAVITY_CLIENT_SECRET } from './utils/antigravity';
 
 // --- Types ---
 export interface Env {
@@ -332,16 +333,20 @@ export default {
             `, { headers: { 'Content-Type': 'text/html' } });
         }
 
-        if (requestUrl.pathname === '/api/oauth-exchange') {
+        if (requestUrl.pathname === '/api/oauth-exchange' || requestUrl.pathname === '/api/antigravity/oauth-exchange') {
             if (request.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
             try {
-                const { code, client_id, client_secret, redirect_uri } = await request.json<any>();
+                const bodyJson = await request.json<any>();
+                const { code, client_id, client_secret, isAntigravity } = bodyJson;
                 const cookies = cookie.parse(request.headers.get('Cookie') || '');
                 const verifier = cookies['pkce_verifier'];
 
-                const finalClientId = client_id || env.OAUTH_CLIENT_ID || "";
-                const finalClientSecret = client_secret || env.OAUTH_CLIENT_SECRET || "";
-                // Must match the one used in /api/oauth-authorize
+                const isAgy = isAntigravity || requestUrl.pathname.includes('antigravity');
+                const defaultClientId = isAgy ? ANTIGRAVITY_CLIENT_ID : (env.OAUTH_CLIENT_ID || "");
+                const defaultClientSecret = isAgy ? ANTIGRAVITY_CLIENT_SECRET : (env.OAUTH_CLIENT_SECRET || "");
+
+                const finalClientId = client_id || defaultClientId;
+                const finalClientSecret = client_secret || defaultClientSecret;
                 const finalRedirectUri = "http://localhost:8085/oauth2callback";
 
                 const tokenParams: Record<string, string> = {
@@ -374,7 +379,6 @@ export default {
 
                 const email = decodeJwtEmail(tokens.id_token) || 'unknown_owner';
 
-                // Discover project ID using advanced companion discovery
                 let projectId = 'default';
                 try {
                     projectId = await discoverProjectId(tokens.access_token, email) || 'default';
@@ -382,7 +386,7 @@ export default {
                     console.error("OAuth Exchange: dynamic project discovery failed:", e);
                 }
 
-                const credentialString = `${client_id}:${client_secret}:${tokens.refresh_token}:${projectId}:${email}`;
+                const credentialString = `${finalClientId}:${finalClientSecret}:${tokens.refresh_token}:${projectId}:${email}`;
                 return jsonResponse({ credential_string: credentialString });
             } catch (e: any) {
                 return jsonResponse({ error: e.message }, 500);
@@ -390,8 +394,9 @@ export default {
         }
 
         // Handle API calls for credentials
-        if (requestUrl.pathname === '/api/credentials' || requestUrl.pathname === '/api/oauth-credentials') {
+        if (requestUrl.pathname === '/api/credentials' || requestUrl.pathname === '/api/oauth-credentials' || requestUrl.pathname === '/api/antigravity-credentials') {
           const isOAuth = requestUrl.pathname === '/api/oauth-credentials';
+          const isAntigravity = requestUrl.pathname === '/api/antigravity-credentials';
           const corsHeaders = getCorsHeaders(request);
           const headers = new Headers(corsHeaders);
 
@@ -415,14 +420,22 @@ export default {
             const accessToken = request.headers.get('X-Access-Token');
             if (!accessToken) {
               // Return list of all configured tokens for this admin
-              const query = isOAuth 
-                ? "SELECT access_token FROM api_credentials WHERE owner_admin_id = ? AND oauth_credentials != ''"
-                : "SELECT access_token FROM api_credentials WHERE owner_admin_id = ? AND api_keys != ''";
+              let query = "SELECT access_token FROM api_credentials WHERE owner_admin_id = ? AND api_keys != ''";
+              if (isAntigravity) {
+                query = "SELECT access_token FROM api_credentials WHERE owner_admin_id = ? AND antigravity_credentials != ''";
+              } else if (isOAuth) {
+                query = "SELECT access_token FROM api_credentials WHERE owner_admin_id = ? AND oauth_credentials != ''";
+              }
               const result = await env.DB.prepare(query).bind(admin.id).all<any>();
               const tokens = result.results.map((r: any) => r.access_token);
               return jsonResponse({ tokens }, 200, headers);
             }
-            const query = isOAuth ? "SELECT oauth_credentials, enable_logging, enable_pruning FROM api_credentials WHERE access_token = ? AND owner_admin_id = ? AND oauth_credentials != ''" : "SELECT api_keys, enable_logging, enable_pruning FROM api_credentials WHERE access_token = ? AND owner_admin_id = ? AND api_keys != ''";
+            let query = "SELECT api_keys, enable_logging, enable_pruning FROM api_credentials WHERE access_token = ? AND owner_admin_id = ? AND api_keys != ''";
+            if (isAntigravity) {
+              query = "SELECT antigravity_credentials, enable_logging, enable_pruning FROM api_credentials WHERE access_token = ? AND owner_admin_id = ? AND antigravity_credentials != ''";
+            } else if (isOAuth) {
+              query = "SELECT oauth_credentials, enable_logging, enable_pruning FROM api_credentials WHERE access_token = ? AND owner_admin_id = ? AND oauth_credentials != ''";
+            }
             const result = await env.DB.prepare(query).bind(accessToken.trim(), admin.id).first<any>();
             return jsonResponse(result || {}, 200, headers);
           }
@@ -447,7 +460,27 @@ export default {
               const enableLogging = (body.enable_logging === true || body.enable_logging === 1 || body.enable_logging === '1') ? 1 : 0;
               const enablePruning = (body.enable_pruning === undefined || body.enable_pruning === true || body.enable_pruning === 1 || body.enable_pruning === '1') ? 1 : 0;
 
-              if (isOAuth) {
+              if (isAntigravity) {
+                const agyInput = body.antigravity_credentials;
+                if (!agyInput || typeof agyInput !== 'string' || agyInput.trim() === '') {
+                  return jsonResponse({ error: 'Antigravity OAuth credentials are required.' }, 400, headers);
+                }
+                const agyKeys = agyInput.split(/[\s,]+/).map(k => k.trim()).filter(k => k);
+                const agyString = agyKeys.join(',');
+
+                const stmt = env.DB.prepare(
+                  `INSERT INTO api_credentials (access_token, owner_admin_id, antigravity_credentials, current_antigravity_index, antigravity_key_states, api_keys, current_key_index, key_states, oauth_credentials, current_oauth_index, oauth_key_states, enable_logging, enable_pruning)
+                   VALUES (?, ?, ?, 0, '[]', '', 0, '[]', '', 0, '[]', ?, ?)
+                   ON CONFLICT(access_token) DO UPDATE SET
+                     antigravity_credentials = excluded.antigravity_credentials,
+                     current_antigravity_index = 0,
+                     antigravity_key_states = '[]',
+                     owner_admin_id = excluded.owner_admin_id,
+                     enable_logging = excluded.enable_logging,
+                     enable_pruning = excluded.enable_pruning`
+                );
+                await stmt.bind(accessToken, admin.id, agyString, enableLogging, enablePruning).run();
+              } else if (isOAuth) {
                 const oauthInput = body.oauth_credentials;
                 if (!oauthInput || typeof oauthInput !== 'string' || oauthInput.trim() === '') {
                   return jsonResponse({ error: 'OAuth credentials are required.' }, 400, headers);
@@ -507,7 +540,15 @@ export default {
                 return jsonResponse({ error: 'A valid Access Token is required in the X-Access-Token header.' }, 400, headers);
               }
 
-              if (isOAuth) {
+              if (isAntigravity) {
+                const stmt = env.DB.prepare("UPDATE api_credentials SET antigravity_credentials = '', current_antigravity_index = 0, antigravity_key_states = '[]' WHERE access_token = ? AND owner_admin_id = ?");
+                const { meta } = await stmt.bind(accessToken.trim(), admin.id).run();
+                if (meta.changes > 0) {
+                  clearDoCache(accessToken.trim());
+                  return jsonResponse({ message: 'Antigravity OAuth credentials deleted successfully.' }, 200, headers);
+                }
+                return jsonResponse({ error: 'No matching Antigravity credentials found to delete.' }, 404, headers);
+              } else if (isOAuth) {
                 const stmt = env.DB.prepare("UPDATE api_credentials SET oauth_credentials = '', current_oauth_index = 0, oauth_key_states = '[]' WHERE access_token = ? AND owner_admin_id = ?");
                 const { meta } = await stmt.bind(accessToken.trim(), admin.id).run();
                 if (meta.changes > 0) {
