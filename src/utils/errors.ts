@@ -1,5 +1,7 @@
 export type Protocol = 'openai' | 'claude' | 'google';
 
+export const JSON_HEADERS = { 'Content-Type': 'application/json;charset=UTF-8' };
+
 export function createErrorResponse(
 	message: string,
 	status: number,
