@@ -76,7 +76,7 @@
         <!-- OAuth Credentials Tab -->
         <div id="oauth-tab" class="tab-content">
             <h2>Manage OAuth Credentials</h2>
-            <p>Set up OAuth credentials for Gemini CLI and Antigravity. You can either manually paste a credential string or use the "Connect Google Account" flow.</p>
+            <p>Set up OAuth credentials for Gemini CLI. You can either manually paste a credential string or use the "Connect Google Account" flow.</p>
 
             <form id="oauthForm">
                 <label for="oauthAccessTokenSelect">Access Token:</label><br>
@@ -99,20 +99,10 @@
                 
                 <div style="background: var(--code-bg); padding: 1.5rem; border-radius: 8px; border: 1px solid var(--border-color); margin-bottom: 1.5rem;">
                     <h3 style="margin-top: 0;">Connect Google Account</h3>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
-                        <div>
-                            <label for="clientId">Client ID:</label>
-                            <input type="text" id="clientId" placeholder="Google OAuth Client ID">
-                        </div>
-                        <div>
-                            <label for="clientSecret">Client Secret:</label>
-                            <input type="text" id="clientSecret" placeholder="Google OAuth Client Secret">
-                        </div>
-                    </div>
-                    <button type="button" id="connectGoogleBtn" style="background-color: #4285F4;">Connect Google Account</button>
-                    <p style="font-size: 0.85rem; color: #718096; margin-top: 0.5rem;">This will open a popup. If the redirect fails (localhost:8085), <strong>copy the full URL</strong> from the address bar and paste it below.</p>
+                    <button type="button" id="connectGoogleBtn" style="background-color: var(--accent-color);">Connect Google Account</button>
+                    <p style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 0.5rem;">This will open a popup. If the redirect fails (localhost:8085), <strong>copy the full URL</strong> from the address bar and paste it below.</p>
                     
-                    <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #e2e8f0;">
+                    <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border-color);">
                         <label for="manualCode">Manual Callback URL or Code:</label>
                         <div style="display: flex; gap: 0.5rem;">
                             <input type="text" id="manualCode" placeholder="Paste localhost URL or code here">
@@ -122,11 +112,11 @@
                 </div>
 
                 <label for="oauthCredentials">OAuth Credentials (One per line):</label>
-                <textarea id="oauthCredentials" name="oauthCredentials" required placeholder="client_id:client_secret:refresh_token:project_id"></textarea>
+                <textarea id="oauthCredentials" name="oauthCredentials" required placeholder="client_id:client_secret:refresh_token:project_id:email"></textarea>
                 <br><br>
                 <div class="button-group">
-                    <button type="submit">Save All OAuth Credentials</button>
-                    <button type="button" id="oauthDeleteButton">Clear All OAuth</button>
+                    <button type="submit">Save Credentials</button>
+                    <button type="button" id="oauthDeleteButton">Clear Credentials</button>
                 </div>
             </form>
 
@@ -141,7 +131,7 @@
 
         <!-- Antigravity Credentials Tab -->
         <div id="antigravity-tab" class="tab-content">
-            <h2>Manage Antigravity OAuth Credentials</h2>
+            <h2>Manage Antigravity Credentials</h2>
             <p>Set up Antigravity OAuth credentials using official Google Cloud Code headers and isolated credential pools. Requests using <code>-agy</code> models (e.g. <code>gemini-2.5-pro-agy</code>) will automatically route to this pool.</p>
 
             <form id="antigravityForm">
@@ -165,20 +155,10 @@
                 
                 <div style="background: var(--code-bg); padding: 1.5rem; border-radius: 8px; border: 1px solid var(--border-color); margin-bottom: 1.5rem;">
                     <h3 style="margin-top: 0;">Connect Antigravity Account</h3>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
-                        <div>
-                            <label for="agyClientId">Client ID:</label>
-                            <input type="text" id="agyClientId" value="1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com" placeholder="Antigravity OAuth Client ID">
-                        </div>
-                        <div>
-                            <label for="agyClientSecret">Client Secret:</label>
-                            <input type="text" id="agyClientSecret" value="GOCSPX-K5FWR486LdLJ1mLB8sXC4z6qDAf" placeholder="Antigravity OAuth Client Secret">
-                        </div>
-                    </div>
-                    <button type="button" id="agyConnectGoogleBtn" style="background-color: #6366f1;">🚀 Connect Antigravity Account</button>
-                    <p style="font-size: 0.85rem; color: #718096; margin-top: 0.5rem;">This will open a popup. If the redirect fails (localhost:8085), <strong>copy the full URL</strong> from the address bar and paste it below.</p>
+                    <button type="button" id="agyConnectGoogleBtn" style="background-color: var(--accent-color);">Connect Antigravity Account</button>
+                    <p style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 0.5rem;">This will open a popup. If the redirect fails (localhost:8085), <strong>copy the full URL</strong> from the address bar and paste it below.</p>
                     
-                    <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #e2e8f0;">
+                    <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border-color);">
                         <label for="agyManualCode">Manual Callback URL or Code:</label>
                         <div style="display: flex; gap: 0.5rem;">
                             <input type="text" id="agyManualCode" placeholder="Paste localhost URL or code here">
@@ -191,8 +171,8 @@
                 <textarea id="antigravityCredentials" name="antigravityCredentials" required placeholder="client_id:client_secret:refresh_token:project_id:email"></textarea>
                 <br><br>
                 <div class="button-group">
-                    <button type="submit">Save Antigravity Credentials</button>
-                    <button type="button" id="agyDeleteButton">Clear Antigravity Credentials</button>
+                    <button type="submit">Save Credentials</button>
+                    <button type="button" id="agyDeleteButton">Clear Credentials</button>
                 </div>
             </form>
 
@@ -200,7 +180,7 @@
 
             <!-- Key Health Section for Antigravity -->
             <div id="agy-key-health" class="key-status-container" style="display: none;">
-                <h3>Current Antigravity Credential Health</h3>
+                <h3>Current Credential Health</h3>
                 <div id="agy-key-status-list" class="key-status-list"></div>
             </div>
         </div>
@@ -313,6 +293,26 @@
                     </table>
                 </div>
 
+                    <h3>Antigravity Keys Usage <span id="antigravityCount" class="table-count"></span></h3>
+                    <div style="overflow-x: auto; margin-bottom: 2rem;">
+                        <table class="stats-table" style="width: 100%; border-collapse: collapse; margin-bottom: 1rem;">
+                            <thead>
+                                <tr style="background-color: var(--code-bg);">
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">Antigravity Key</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Mode</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">Model</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Requests</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Success Rate</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">429 Errors</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Prompt / Completion</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Cached / Pruned</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="antigravityStatsBody"></tbody>
+                        </table>
+                    </div>
+
                     <h3>OAuth Credentials Usage <span id="oauthCount" class="table-count"></span></h3>
                     <div style="overflow-x: auto;">
                         <table class="stats-table" style="width: 100%; border-collapse: collapse;">
@@ -356,6 +356,26 @@
                         </table>
                     </div>
 
+                    <h3>Antigravity Key Usage by User <span id="userAntigravityCount" class="table-count"></span></h3>
+                    <div style="overflow-x: auto; margin-bottom: 2rem;">
+                        <table class="stats-table" style="width: 100%; border-collapse: collapse;">
+                            <thead>
+                                <tr style="background-color: var(--code-bg);">
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">User Access Token</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">Date</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Mode</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">Model</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Requests</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Success Rate</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">429 Errors</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Prompt / Completion</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Cached / Pruned</th>
+                                </tr>
+                            </thead>
+                            <tbody id="userAntigravityStatsBody"></tbody>
+                        </table>
+                    </div>
+
                     <h3>OAuth Credential Usage by User <span id="userOauthCount" class="table-count"></span></h3>
                     <div style="overflow-x: auto;">
                         <table class="stats-table" style="width: 100%; border-collapse: collapse;">
@@ -395,6 +415,25 @@
                                 </tr>
                             </thead>
                             <tbody id="modelApiStatsBody"></tbody>
+                        </table>
+                    </div>
+
+                    <h3>Antigravity Key Usage by Model <span id="modelAntigravityCount" class="table-count"></span></h3>
+                    <div style="overflow-x: auto; margin-bottom: 2rem;">
+                        <table class="stats-table" style="width: 100%; border-collapse: collapse;">
+                            <thead>
+                                <tr style="background-color: var(--code-bg);">
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">Model Name</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: left;">Date</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Mode</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Requests</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Success Rate</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">429 Errors</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Prompt / Completion</th>
+                                    <th style="padding: 10px; border: 1px solid var(--border-color); text-align: center;">Cached / Pruned</th>
+                                </tr>
+                            </thead>
+                            <tbody id="modelAntigravityStatsBody"></tbody>
                         </table>
                     </div>
 

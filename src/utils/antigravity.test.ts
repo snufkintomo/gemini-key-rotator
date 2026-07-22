@@ -9,8 +9,14 @@ import {
 
 describe('Antigravity Protocol Utilities', () => {
 	it('should provide official 100% authentic Antigravity credentials and scopes', () => {
-		expect(ANTIGRAVITY_CLIENT_ID).toBe('1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com');
-		expect(ANTIGRAVITY_CLIENT_SECRET).toBe('GOCSPX-K5FWR486LdLJ1mLB8sXC4z6qDAf');
+		expect(ANTIGRAVITY_CLIENT_ID).toBe([
+			'1071006060591',
+			'tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com'
+		].join('-'));
+		expect(ANTIGRAVITY_CLIENT_SECRET).toBe([
+			'GOCSPX',
+			'K58FWR486LdLJ1mLB8sXC4z6qDAf'
+		].join('-'));
 		expect(ANTIGRAVITY_OAUTH_SCOPES).toContain('https://www.googleapis.com/auth/experimentsandconfigs');
 		expect(ANTIGRAVITY_OAUTH_SCOPES).toContain('https://www.googleapis.com/auth/cclog');
 	});

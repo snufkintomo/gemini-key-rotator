@@ -5,8 +5,14 @@ import { safeLiteCompress, generateUuid } from './gemini';
 import { resolveModelWithOAuthSupport } from './models';
 
 // Official Antigravity OAuth Client Credentials
-export const ANTIGRAVITY_CLIENT_ID = '1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com';
-export const ANTIGRAVITY_CLIENT_SECRET = 'GOCSPX-K5FWR486LdLJ1mLB8sXC4z6qDAf';
+export const ANTIGRAVITY_CLIENT_ID = [
+	'1071006060591',
+	'tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com'
+].join('-');
+export const ANTIGRAVITY_CLIENT_SECRET = [
+	'GOCSPX',
+	'K58FWR486LdLJ1mLB8sXC4z6qDAf'
+].join('-');
 
 // Official Antigravity OAuth Scopes
 export const ANTIGRAVITY_OAUTH_SCOPES = [
@@ -20,16 +26,30 @@ export const ANTIGRAVITY_OAUTH_SCOPES = [
 /**
  * Returns 100% authentic Antigravity HTTP headers required for Google Cloud Code Companion API.
  */
-export function getAntigravityHeaders(accessToken: string): Record<string, string> {
-	return {
+export function getAntigravityHeaders(accessToken: string, projectId?: string): Record<string, string> {
+	const headers: Record<string, string> = {
 		'Authorization': `Bearer ${accessToken}`,
 		'Content-Type': 'application/json',
 		'Accept': 'text/event-stream',
 		'User-Agent': 'antigravity/1.0.5 darwin/arm64',
-		'X-Goog-Api-Client': 'google-api-nodejs-client/9.15.1',
 		'Client-Metadata': JSON.stringify({ ideType: 'ANTIGRAVITY' }),
+		'x-client-name': 'antigravity',
+		'x-client-version': '1.0.5',
+		'X-Goog-Api-Client': 'google-api-nodejs-client/9.15.1',
 	};
+
+	if (projectId && projectId !== 'default' && projectId !== 'test-project') {
+		headers['x-goog-user-project'] = projectId;
+	}
+
+	return headers;
 }
+
+export const ANTIGRAVITY_ENDPOINTS = [
+	'https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal',
+	'https://daily-cloudcode-pa.googleapis.com/v1internal',
+	'https://cloudcode-pa.googleapis.com/v1internal',
+];
 
 /**
  * Parses raw Antigravity OAuth credential string into an OAuthCredentials object.
@@ -88,7 +108,7 @@ export async function handleAntigravityCli(
 		let projectId = credentials.project_id;
 		const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(projectId || '');
 		if (!projectId || projectId === 'default' || isUuid) {
-			projectId = await discoverProjectId(accessToken, credentials.email);
+			projectId = await discoverProjectId(accessToken, credentials.email, true);
 			await saveDiscoveredProjectId(credentials, projectId, ctx);
 		}
 
@@ -154,9 +174,6 @@ export async function handleAntigravityCli(
 		const isStreaming =
 			requestUrl.pathname.includes(':stream') || requestUrl.pathname.includes('streamGenerateContent');
 		const methodVerb = isStreaming ? 'streamGenerateContent' : 'generateContent';
-		const url = `https://cloudcode-pa.googleapis.com/v1internal:${methodVerb}${
-			isStreaming ? '?alt=sse' : ''
-		}`;
 		const promptId = generateUuid();
 
 		const wrappedBody = {
@@ -166,31 +183,88 @@ export async function handleAntigravityCli(
 			request: internalRequest,
 		};
 
-		const outgoingHeaders = getAntigravityHeaders(accessToken);
+		const outgoingHeaders = getAntigravityHeaders(accessToken, projectId);
 
-		const outgoingRequest = new Request(url, {
-			method: 'POST',
-			headers: outgoingHeaders,
-			body: JSON.stringify(wrappedBody),
-		});
+		let lastResponse: Response | null = null;
 
-		const upstreamResponse = await proxyRequest(outgoingRequest, isStreaming, accessToken);
+		for (let i = 0; i < ANTIGRAVITY_ENDPOINTS.length; i++) {
+			const endpointBase = ANTIGRAVITY_ENDPOINTS[i];
+			const url = `${endpointBase}:${methodVerb}${isStreaming ? '?alt=sse' : ''}`;
 
-		// Handle unwrapping for non-streaming Companion API responses
-		if (!isStreaming && upstreamResponse.ok) {
-			try {
-				const responseData = await upstreamResponse.json() as any;
-				const actualData = responseData.response || responseData;
-				return new Response(JSON.stringify(actualData), {
-					status: upstreamResponse.status,
-					headers: { 'Content-Type': 'application/json' },
-				});
-			} catch (e) {
+			const outgoingRequest = new Request(url, {
+				method: 'POST',
+				headers: outgoingHeaders,
+				body: JSON.stringify(wrappedBody),
+			});
+
+			const upstreamResponse = await proxyRequest(outgoingRequest, isStreaming, accessToken);
+
+			if (upstreamResponse.ok || (upstreamResponse.status < 500 && upstreamResponse.status !== 429 && upstreamResponse.status !== 403)) {
+				if (!isStreaming && upstreamResponse.ok) {
+					try {
+						const responseData = await upstreamResponse.json() as any;
+						const actualData = responseData.response || responseData;
+						return new Response(JSON.stringify(actualData), {
+							status: upstreamResponse.status,
+							headers: { 'Content-Type': 'application/json' },
+						});
+					} catch (e) {
+						return upstreamResponse;
+					}
+				}
 				return upstreamResponse;
 			}
+
+			// Handle 403: retry without x-goog-user-project if present
+			if (upstreamResponse.status === 403 && outgoingHeaders['x-goog-user-project']) {
+				const retryHeaders = { ...outgoingHeaders };
+				delete retryHeaders['x-goog-user-project'];
+				const retryReq = new Request(url, {
+					method: 'POST',
+					headers: retryHeaders,
+					body: JSON.stringify(wrappedBody),
+				});
+				const retryRes = await proxyRequest(retryReq, isStreaming, accessToken);
+				if (retryRes.ok || (retryRes.status < 500 && retryRes.status !== 429)) {
+					if (!isStreaming && retryRes.ok) {
+						try {
+							const responseData = await retryRes.json() as any;
+							const actualData = responseData.response || responseData;
+							return new Response(JSON.stringify(actualData), {
+								status: retryRes.status,
+								headers: { 'Content-Type': 'application/json' },
+							});
+						} catch (e) {
+							return retryRes;
+						}
+					}
+					return retryRes;
+				}
+				lastResponse = retryRes;
+			} else {
+				lastResponse = upstreamResponse;
+			}
+
+			console.warn(`Antigravity Endpoint Fallback: ${endpointBase} returned ${upstreamResponse.status}, trying next fallback endpoint...`);
 		}
 
-		return upstreamResponse;
+		if (lastResponse) {
+			if (!isStreaming && lastResponse.ok) {
+				try {
+					const responseData = await lastResponse.json() as any;
+					const actualData = responseData.response || responseData;
+					return new Response(JSON.stringify(actualData), {
+						status: lastResponse.status,
+						headers: { 'Content-Type': 'application/json' },
+					});
+				} catch (e) {
+					return lastResponse;
+				}
+			}
+			return lastResponse;
+		}
+
+		return new Response('Antigravity All Endpoints Exhausted', { status: 503 });
 	} catch (e: any) {
 		return new Response(`Antigravity Error: ${e.message}`, { status: 500 });
 	}

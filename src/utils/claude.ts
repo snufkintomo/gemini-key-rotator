@@ -25,20 +25,26 @@ export async function transformClaudeMessagesToGeminiContents(messages: ClaudeMe
 			let currentSignature: string | undefined;
 
 			if (typeof item.content === 'string') {
-				parts.push({ text: item.content });
+				if (item.content && item.content.trim().length > 0) {
+					parts.push({ text: item.content });
+				}
 			} else if (Array.isArray(item.content)) {
 				for (const part of item.content) {
 					switch (part.type) {
 						case 'thinking':
 							if ((part as any).signature) currentSignature = (part as any).signature;
-							parts.push({
-								thought: true,
-								text: part.thinking,
-								thoughtSignature: (part as any).signature,
-							});
+							if (part.thinking && part.thinking.trim().length > 0) {
+								parts.push({
+									thought: true,
+									text: part.thinking,
+									thoughtSignature: (part as any).signature,
+								});
+							}
 							break;
 						case 'text':
-							if (part.text) parts.push({ text: part.text });
+							if (part.text && part.text.trim().length > 0) {
+								parts.push({ text: part.text });
+							}
 							break;
 						case 'image':
 							if (part.source?.type === 'base64') {
@@ -85,14 +91,18 @@ export async function transformClaudeMessagesToGeminiContents(messages: ClaudeMe
 					}
 				}
 			}
-			contents.push({ role: item.role === 'assistant' ? 'model' : 'user', parts: parts });
+			if (parts.length > 0) {
+				contents.push({ role: item.role === 'assistant' ? 'model' : 'user', parts: parts });
+			}
 		} else if (item.role === 'system') {
 			if (typeof item.content === 'string') {
-				system_instruction = { parts: [{ text: item.content }] };
+				if (item.content && item.content.trim().length > 0) {
+					system_instruction = { parts: [{ text: item.content }] };
+				}
 			} else if (Array.isArray(item.content)) {
 				const textParts = (item.content as any[])
-					.filter((p) => p.type === 'text')
-					.map((p) => ({ text: p.text || '' }));
+					.filter((p) => p.type === 'text' && p.text && p.text.trim().length > 0)
+					.map((p) => ({ text: p.text }));
 				if (textParts.length > 0) {
 					system_instruction = { parts: textParts };
 				}

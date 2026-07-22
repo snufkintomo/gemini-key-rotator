@@ -1,6 +1,7 @@
 import type { OAuthCredentials, GoogleTokenResponse } from '../types';
 import { SystemContext } from './context';
 import { sendInvalidTokenEmail } from './email';
+import { getAntigravityHeaders } from './antigravity';
 
 export async function refreshOAuthToken(
 	credentials: OAuthCredentials,
@@ -266,14 +267,18 @@ export function sanitizeText(text: unknown): string {
 	return String(text ?? "").replace(/[\uD800-\uDFFF]/g, "\uFFFD");
 }
 
-export async function discoverProjectId(accessToken: string, email?: string): Promise<string> {
-	const headers = {
-		'Authorization': `Bearer ${accessToken}`,
-		'Content-Type': 'application/json',
-		'User-Agent': 'google-api-nodejs-client/9.15.1',
-		'X-Goog-Api-Client': 'google-api-nodejs-client/9.15.1',
-		'Client-Metadata': 'ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI',
-	};
+export async function discoverProjectId(accessToken: string, email?: string, isAntigravity?: boolean): Promise<string> {
+	const headers: Record<string, string> = isAntigravity
+		? getAntigravityHeaders(accessToken)
+		: {
+			'Authorization': `Bearer ${accessToken}`,
+			'Content-Type': 'application/json',
+			'User-Agent': 'google-api-nodejs-client/9.15.1',
+			'X-Goog-Api-Client': 'google-api-nodejs-client/9.15.1',
+			'Client-Metadata': 'ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI',
+		  };
+
+	const metadataObj = isAntigravity ? { ideType: 'ANTIGRAVITY' } : { ideType: 'IDE_UNSPECIFIED' };
 
 	// 1. Try `/v1internal:loadCodeAssist` via Cloud Code Companion API
 	try {
@@ -281,7 +286,7 @@ export async function discoverProjectId(accessToken: string, email?: string): Pr
 		const res = await fetch(loadCodeAssistUrl, {
 			method: 'POST',
 			headers,
-			body: JSON.stringify({ metadata: { ideType: 'IDE_UNSPECIFIED' } }),
+			body: JSON.stringify({ metadata: metadataObj }),
 		});
 		if (res.ok) {
 			const data = await res.json() as any;
@@ -393,25 +398,55 @@ export async function saveDiscoveredProjectId(
 ) {
 	if (!ctx?.env?.DB) return;
 	try {
-		const allRows = await ctx.env.DB.prepare('SELECT access_token, oauth_credentials FROM api_credentials').all();
-		const matchingResults = allRows.results?.filter(row => (row.oauth_credentials as string)?.includes(credentials.refresh_token)) || [];
-		if (matchingResults.length > 0) {
-			for (const row of matchingResults) {
-				const oauth_credentials = row.oauth_credentials as string;
-				const access_token = row.access_token as string;
+		const allRows = await ctx.env.DB.prepare('SELECT access_token, oauth_credentials, antigravity_credentials FROM api_credentials').all();
+		
+		for (const row of (allRows.results || [])) {
+			const access_token = row.access_token as string;
+			const oauth_credentials = row.oauth_credentials as string || '';
+			const antigravity_credentials = row.antigravity_credentials as string || '';
+
+			let oauthUpdated = false;
+			let agyUpdated = false;
+
+			let updatedOauth = oauth_credentials;
+			let updatedAgy = antigravity_credentials;
+
+			if (oauth_credentials.includes(credentials.refresh_token)) {
 				const parts = oauth_credentials.split(',');
 				const updatedParts = parts.map(part => {
 					const credParts = part.split(':');
-					// Format is client_id:client_secret:refresh_token:project_id:email
 					if (credParts.length >= 4 && credParts[2] === credentials.refresh_token) {
 						credParts[3] = discoveredProjectId;
+						oauthUpdated = true;
 						return credParts.join(':');
 					}
 					return part;
 				});
-				const updatedOauthCredentials = updatedParts.join(',');
+				updatedOauth = updatedParts.join(',');
+			}
+
+			if (antigravity_credentials.includes(credentials.refresh_token)) {
+				const parts = antigravity_credentials.split(',');
+				const updatedParts = parts.map(part => {
+					const credParts = part.split(':');
+					if (credParts.length >= 4 && credParts[2] === credentials.refresh_token) {
+						credParts[3] = discoveredProjectId;
+						agyUpdated = true;
+						return credParts.join(':');
+					}
+					return part;
+				});
+				updatedAgy = updatedParts.join(',');
+			}
+
+			if (oauthUpdated) {
 				await ctx.env.DB.prepare('UPDATE api_credentials SET oauth_credentials = ? WHERE access_token = ?')
-					.bind(updatedOauthCredentials, access_token)
+					.bind(updatedOauth, access_token)
+					.run();
+			}
+			if (agyUpdated) {
+				await ctx.env.DB.prepare('UPDATE api_credentials SET antigravity_credentials = ? WHERE access_token = ?')
+					.bind(updatedAgy, access_token)
 					.run();
 			}
 		}

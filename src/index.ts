@@ -381,7 +381,7 @@ export default {
 
                 let projectId = 'default';
                 try {
-                    projectId = await discoverProjectId(tokens.access_token, email) || 'default';
+                    projectId = await discoverProjectId(tokens.access_token, email, isAgy) || 'default';
                 } catch (e) {
                     console.error("OAuth Exchange: dynamic project discovery failed:", e);
                 }

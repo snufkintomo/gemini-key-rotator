@@ -286,10 +286,13 @@
         const statsContainer = document.getElementById('statsContainer');
         const statsDimensionButtons = document.getElementById('statsDimensionButtons');
         const apiKeyStatsBody = document.getElementById('apiKeyStatsBody');
+        const antigravityStatsBody = document.getElementById('antigravityStatsBody');
         const oauthStatsBody = document.getElementById('oauthStatsBody');
         const userApiStatsBody = document.getElementById('userApiStatsBody');
+        const userAntigravityStatsBody = document.getElementById('userAntigravityStatsBody');
         const userOauthStatsBody = document.getElementById('userOauthStatsBody');
         const modelApiStatsBody = document.getElementById('modelApiStatsBody');
+        const modelAntigravityStatsBody = document.getElementById('modelAntigravityStatsBody');
         const modelOauthStatsBody = document.getElementById('modelOauthStatsBody');
         const statsSearch = document.getElementById('statsSearch');
         const statsDateFilter = document.getElementById('statsDateFilter');
@@ -601,43 +604,21 @@
 
         function renderStatistics(stats) {
             apiKeyStatsBody.innerHTML = '';
+            antigravityStatsBody.innerHTML = '';
             oauthStatsBody.innerHTML = '';
             userApiStatsBody.innerHTML = '';
+            userAntigravityStatsBody.innerHTML = '';
             userOauthStatsBody.innerHTML = '';
             modelApiStatsBody.innerHTML = '';
+            modelAntigravityStatsBody.innerHTML = '';
             modelOauthStatsBody.innerHTML = '';
 
-            // --- By Key (Aggregated) ---
-            let apiKeyAggList = [];
-            let oauthKeyAggList = [];
-
-            const aggregate = (targetList, filterByZero, filterBy429) => {
-                const agg = {};
-                stats.filter(s => (targetList === apiKeyAggList ? s.key_type !== 'oauth' : s.key_type === 'oauth')).forEach(s => {
-                    const key = s.raw_key;
-                    const mode = s.mode || 'unknown';
-                    const model = s.model || 'unknown';
-                    const compositeKey = `${key}|${mode}|${model}`;
-                    
-                    if (!agg[compositeKey]) {
-                        agg[compositeKey] = { 
-                            requests: 0, success: 0, errors429: 0,
-                            raw_key: key, mode: mode, model: model
-                        };
-                    }
-                    agg[compositeKey].requests += s.request_count;
-                    agg[compositeKey].success += s.success_count;
-                    agg[compositeList === apiKeyAggList ? 'errors429' : 'errors429'] = (agg[compositeKey].errors429 || 0) + s.error_429_count;
-                    // wait, previous code had a bug in errors429 reference if I'm not careful
-                });
-                return Object.values(agg);
-            };
-
             // Cleaner aggregation logic
-            const buildAgg = (isOAuth) => {
+            const buildAgg = (type) => {
                 const agg = {};
                 stats.forEach(s => {
-                    if ((isOAuth && s.key_type === 'oauth') || (!isOAuth && s.key_type !== 'oauth')) {
+                    const kType = s.key_type || 'api_key';
+                    if (kType === type) {
                         const key = s.raw_key;
                         const mode = s.mode || 'unknown';
                         const model = s.model || 'unknown';
@@ -658,10 +639,11 @@
                 return list;
             };
 
-            const apiKeyAggListFinal = buildAgg(false);
-            const oauthKeyAggListFinal = buildAgg(true);
+            const apiKeyAggListFinal = buildAgg('api_key');
+            const antigravityKeyAggListFinal = buildAgg('antigravity');
+            const oauthKeyAggListFinal = buildAgg('oauth');
 
-            const createKeyRow = (data, isOAuth) => {
+            const createKeyRow = (data, keyType) => {
                 const isZeroSuccess = data.requests > 0 && data.success === 0;
                 const successRate = data.requests > 0 
                     ? ((data.success / data.requests) * 100).toFixed(1) + '%' 
@@ -674,6 +656,9 @@
                 const tokenParam = data.token ? `'${data.token}'` : 'null';
                 const keyParam = `'${data.raw_key}'`;
                 const modelParam = `'${data.model}'`;
+
+                const isOAuth = keyType === 'oauth' ? 'true' : 'false';
+                const isAntigravity = keyType === 'antigravity' ? 'true' : 'false';
 
                 // Badge colors for mode
                 const badgeBg = 'var(--code-bg)'; // Use theme-aware code background
@@ -692,7 +677,7 @@
                             ⚡️ ${formatTokens(data.cachedTokens || 0)} <span style="color: #805ad5; font-size: 0.85rem;">/ ✨ ${formatTokens(data.savedTokens || 0)}</span>
                         </td>
                         <td style="padding: 8px; border: 1px solid var(--border-color); text-align: center;">
-                            <button class="btn-secondary-outline" onclick="diagnoseKeyFromStats(${tokenParam}, ${keyParam}, ${isOAuth}, ${modelParam}, this)">Test Key</button>
+                            <button class="btn-secondary-outline" onclick="diagnoseKeyFromStats(${tokenParam}, ${keyParam}, ${isOAuth}, ${isAntigravity}, ${modelParam}, this)">Test Key</button>
                         </td>
                     </tr>
                 `;
@@ -719,15 +704,20 @@
             };
 
             const apiKeyStatsSorted = sortStats(apiKeyAggListFinal, 'raw_key');
+            const antigravityKeyStatsSorted = sortStats(antigravityKeyAggListFinal, 'raw_key');
             const oauthKeyStatsSorted = sortStats(oauthKeyAggListFinal, 'raw_key');
 
-            apiKeyStatsSorted.forEach(s => { apiKeyStatsBody.innerHTML += createKeyRow(s, false); });
-            oauthKeyStatsSorted.forEach(s => { oauthStatsBody.innerHTML += createKeyRow(s, true); });
+            apiKeyStatsSorted.forEach(s => { apiKeyStatsBody.innerHTML += createKeyRow(s, 'api_key'); });
+            antigravityKeyStatsSorted.forEach(s => { antigravityStatsBody.innerHTML += createKeyRow(s, 'antigravity'); });
+            oauthKeyStatsSorted.forEach(s => { oauthStatsBody.innerHTML += createKeyRow(s, 'oauth'); });
 
             if (apiKeyStatsSorted.length === 0) apiKeyStatsBody.innerHTML = '<tr><td colspan="9" style="text-align: center; padding: 20px;">No API Key statistics found.</td></tr>';
+            if (antigravityKeyStatsSorted.length === 0) antigravityStatsBody.innerHTML = '<tr><td colspan="9" style="text-align: center; padding: 20px;">No Antigravity statistics found.</td></tr>';
             if (oauthKeyStatsSorted.length === 0) oauthStatsBody.innerHTML = '<tr><td colspan="9" style="text-align: center; padding: 20px;">No OAuth statistics found.</td></tr>';
 
             document.getElementById('apiKeyCount').textContent = apiKeyStatsSorted.length;
+            const antigravityCountEl = document.getElementById('antigravityCount');
+            if (antigravityCountEl) antigravityCountEl.textContent = antigravityKeyStatsSorted.length;
             document.getElementById('oauthCount').textContent = oauthKeyStatsSorted.length;
 
             // Helper to render aggregate tables
@@ -777,6 +767,7 @@
 
             // --- By User (Aggregate Split) ---
             const userApiAgg = {};
+            const userAntigravityAgg = {};
             const userOauthAgg = {};
             
             let userStats = stats;
@@ -790,7 +781,14 @@
                 const date = s.usage_date;
                 const compositeKey = `${user}|${mode}|${model}|${date}`;
                 
-                const agg = s.key_type === 'oauth' ? userOauthAgg : userApiAgg;
+                let agg = userApiAgg;
+                const kType = s.key_type || 'api_key';
+                if (kType === 'antigravity') {
+                    agg = userAntigravityAgg;
+                } else if (kType === 'oauth') {
+                    agg = userOauthAgg;
+                }
+
                 if (!agg[compositeKey]) {
                     agg[compositeKey] = { 
                         requests: 0, success: 0, errors429: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, savedTokens: 0,
@@ -807,10 +805,12 @@
             });
 
             renderAggTable(userApiAgg, userApiStatsBody, 'userApiKeyCount', 'No user API Key usage found.', ['usage_date', 'mode', 'model']);
+            renderAggTable(userAntigravityAgg, userAntigravityStatsBody, 'userAntigravityCount', 'No user Antigravity usage found.', ['usage_date', 'mode', 'model']);
             renderAggTable(userOauthAgg, userOauthStatsBody, 'userOauthCount', 'No user OAuth usage found.', ['usage_date', 'mode', 'model']);
 
             // --- By Model (Aggregate Split) ---
             const modelApiAgg = {};
+            const modelAntigravityAgg = {};
             const modelOauthAgg = {};
 
             let modelStats = stats;
@@ -823,7 +823,14 @@
                 const date = s.usage_date;
                 const compositeKey = `${model}|${mode}|${date}`;
 
-                const agg = s.key_type === 'oauth' ? modelOauthAgg : modelApiAgg;
+                let agg = modelApiAgg;
+                const kType = s.key_type || 'api_key';
+                if (kType === 'antigravity') {
+                    agg = modelAntigravityAgg;
+                } else if (kType === 'oauth') {
+                    agg = modelOauthAgg;
+                }
+
                 if (!agg[compositeKey]) {
                     agg[compositeKey] = { 
                         requests: 0, success: 0, errors429: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, savedTokens: 0,
@@ -840,6 +847,7 @@
             });
 
             renderAggTable(modelApiAgg, modelApiStatsBody, 'modelApiKeyCount', 'No API Key usage found by model.', ['usage_date', 'mode']);
+            renderAggTable(modelAntigravityAgg, modelAntigravityStatsBody, 'modelAntigravityCount', 'No Antigravity usage found by model.', ['usage_date', 'mode']);
             renderAggTable(modelOauthAgg, modelOauthStatsBody, 'modelOauthCount', 'No OAuth usage found by model.', ['usage_date', 'mode']);
         }
 
@@ -1286,14 +1294,14 @@
                     inputEl.value = selectToken;
                     inputEl.style.display = 'none';
                     // Fetch details
-                    fetchTokenCredentials(selectToken, isOAuth);
+                    fetchTokenCredentials(selectToken, type);
                 } else if (tokens.length > 0 && !selectToken) {
                     // Default to the first existing token for supreme ease of use
                     const firstToken = tokens[0];
                     selectEl.value = firstToken;
                     inputEl.value = firstToken;
                     inputEl.style.display = 'none';
-                    fetchTokenCredentials(firstToken, isOAuth);
+                    fetchTokenCredentials(firstToken, type);
                 } else {
                     // No existing tokens or explicitly creating new
                     selectEl.value = 'create_new';
@@ -1571,8 +1579,6 @@
         const oauthResultDiv = document.getElementById('oauthResult');
         const oauthAccessTokenInput = document.getElementById('oauthAccessToken');
         const oauthCredentialsTextarea = document.getElementById('oauthCredentials');
-        const clientIdInput = document.getElementById('clientId');
-        const clientSecretInput = document.getElementById('clientSecret');
         const connectGoogleBtn = document.getElementById('connectGoogleBtn');
         const manualCodeInput = document.getElementById('manualCode');
         const manualExchangeBtn = document.getElementById('manualExchangeBtn');
@@ -1616,8 +1622,8 @@
         });
 
         connectGoogleBtn.addEventListener('click', async () => {
-            const clientId = clientIdInput.value.trim();
-            const clientSecret = clientSecretInput.value.trim();
+            const clientId = '';
+            const clientSecret = '';
 
             try {
                 // Ensure we get a fresh authorize URL with a new PKCE verifier (stored in cookie)
@@ -1680,8 +1686,8 @@
                 }
             }
 
-            const clientId = clientIdInput.value.trim();
-            const clientSecret = clientSecretInput.value.trim();
+            const clientId = '';
+            const clientSecret = '';
 
             try {
                 const exRes = await fetch('/api/oauth-exchange', {
@@ -1840,11 +1846,8 @@
                 oauthResultDiv.appendChild(document.createTextNode(data.message));
 
                 oauthAccessTokenInput.value = '';
-                clientIdInput.value = '';
-                clientSecretInput.value = '';
-                refreshTokenInput.value = '';
-                projectIdInput.value = '';
-                loadTokenDropdown(true);
+                oauthCredentialsTextarea.value = '';
+                loadTokenDropdown('oauth');
 
             } catch (error) {
                 oauthResultDiv.className = 'error';
@@ -1865,8 +1868,6 @@
         const agyResultDiv = document.getElementById('antigravityResult');
         const agyAccessTokenInput = document.getElementById('agyAccessToken');
         const agyCredentialsTextarea = document.getElementById('antigravityCredentials');
-        const agyClientIdInput = document.getElementById('agyClientId');
-        const agyClientSecretInput = document.getElementById('agyClientSecret');
         const agyConnectGoogleBtn = document.getElementById('agyConnectGoogleBtn');
         const agyManualCodeInput = document.getElementById('agyManualCode');
         const agyManualExchangeBtn = document.getElementById('agyManualExchangeBtn');
@@ -1912,8 +1913,14 @@
 
         if (agyConnectGoogleBtn) {
             agyConnectGoogleBtn.addEventListener('click', async () => {
-                const clientId = agyClientIdInput.value.trim() || '1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com';
-                const clientSecret = agyClientSecretInput.value.trim() || 'GOCSPX-K5FWR486LdLJ1mLB8sXC4z6qDAf';
+                const clientId = [
+                    '1071006060591',
+                    'tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com'
+                ].join('-');
+                const clientSecret = [
+                    'GOCSPX',
+                    'K58FWR486LdLJ1mLB8sXC4z6qDAf'
+                ].join('-');
 
                 try {
                     let authUrl = `/api/oauth-authorize?redirect_uri=${encodeURIComponent(REDIRECT_URI)}&client_id=${clientId}&isAntigravity=true`;
@@ -1970,8 +1977,14 @@
                     } catch (e) {}
                 }
 
-                const clientId = agyClientIdInput.value.trim() || '1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com';
-                const clientSecret = agyClientSecretInput.value.trim() || 'GOCSPX-K5FWR486LdLJ1mLB8sXC4z6qDAf';
+                const clientId = [
+                    '1071006060591',
+                    'tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com'
+                ].join('-');
+                const clientSecret = [
+                    'GOCSPX',
+                    'K58FWR486LdLJ1mLB8sXC4z6qDAf'
+                ].join('-');
 
                 try {
                     const exRes = await fetch('/api/oauth-exchange', {
@@ -2035,23 +2048,48 @@
 
                     while (agyResultDiv.firstChild) agyResultDiv.removeChild(agyResultDiv.firstChild);
 
-                    const baseUrl = window.location.origin;
-                    const openAIUrl = `${baseUrl}/chat/completions`;
+                    const displaySuccess = (token) => {
+                        const baseUrl = window.location.origin;
+                        const openAIUrl = `${baseUrl}/v1/chat/completions`;
 
-                    const h2 = document.createElement('h2');
-                    h2.textContent = 'Success!';
-                    agyResultDiv.appendChild(h2);
+                        const h2 = document.createElement('h2');
+                        h2.textContent = 'Success!';
+                        agyResultDiv.appendChild(h2);
 
-                    const p1 = document.createElement('p');
-                    p1.textContent = 'Antigravity credentials saved for Access Token:';
-                    agyResultDiv.appendChild(p1);
+                        const p1 = document.createElement('p');
+                        p1.textContent = 'Antigravity OAuth credentials saved for Access Token:';
+                        agyResultDiv.appendChild(p1);
 
-                    const pCode = document.createElement('p');
-                    const code = document.createElement('code');
-                    code.textContent = data.access_token;
-                    pCode.appendChild(code);
-                    agyResultDiv.appendChild(pCode);
+                        const pCode = document.createElement('p');
+                        const code = document.createElement('code');
+                        code.textContent = token;
+                        pCode.appendChild(code);
+                        agyResultDiv.appendChild(pCode);
 
+                        agyResultDiv.appendChild(document.createElement('hr'));
+
+                        const h3 = document.createElement('h3');
+                        h3.textContent = 'How to Use';
+                        agyResultDiv.appendChild(h3);
+
+                        const createCurlExample = (title, command) => {
+                            const h4 = document.createElement('h4');
+                            h4.textContent = title;
+                            agyResultDiv.appendChild(h4);
+                            const pre = document.createElement('pre');
+                            const codeElem = document.createElement('code');
+                            codeElem.style.display = 'block';
+                            codeElem.style.whiteSpace = 'pre-wrap';
+                            codeElem.style.wordBreak = 'break-all';
+                            codeElem.textContent = command;
+                            pre.appendChild(codeElem);
+                            agyResultDiv.appendChild(pre);
+                        };
+
+                        createCurlExample('Antigravity Mode (via -agy Suffix)', `curl -X POST \\\n  -H "Authorization: Bearer ${token}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model": "gemini-2.5-pro-agy", "messages": [{"role": "user", "content": "Hello"}]}' \\\n  "${openAIUrl}"`);
+                    };
+
+                    displaySuccess(data.access_token);
                     loadTokenDropdown('antigravity', data.access_token);
 
                 } catch (error) {

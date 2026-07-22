@@ -164,15 +164,15 @@
             transform: none !important;
         }
 
-        #deleteButton, #oauthDeleteButton {
+        #deleteButton, #oauthDeleteButton, #agyDeleteButton {
             background-color: var(--danger-color);
         }
 
-        #deleteButton:hover, #oauthDeleteButton:hover {
+        #deleteButton:hover, #oauthDeleteButton:hover, #agyDeleteButton:hover {
             background-color: var(--danger-color-hover);
         }
 
-        #deleteButton:focus-visible, #oauthDeleteButton:focus-visible {
+        #deleteButton:focus-visible, #oauthDeleteButton:focus-visible, #agyDeleteButton:focus-visible {
             outline-color: var(--danger-color);
         }
 

@@ -14,6 +14,7 @@ import { StorageHelper } from './utils/storage';
 import { getStandardRotationIndex, parseCredentials, parseCsvList } from './utils/credentials';
 import { sendInvalidTokenEmail, sendExhaustedEmail } from './utils/email';
 import { getOAuthAccessToken, parseOAuthCredentials, discoverProjectId, saveDiscoveredProjectId, fetchAvailableModelsForToken } from './utils/oauth';
+import { parseAntigravityCredentials, getAntigravityHeaders, handleAntigravityCli } from './utils/antigravity';
 import { writeCombinedLog } from './utils/logger';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -771,7 +772,8 @@ export class KeyRotator {
 		authMode: string | null,
 		model: string | null,
 		savedTokensCount: number,
-		isMetadataRequest: boolean
+		isMetadataRequest: boolean,
+		effectivelyAntigravity: boolean = false
 	): Response {
 		if (isMetadataRequest) return response;
 
@@ -780,9 +782,17 @@ export class KeyRotator {
 			if (response.status === 404) return; // Scheme 2: Skip recording 404 responses (bad routes/models) to keep statistics pristine
 			if (usageRecorded) return;
 			usageRecorded = true;
+
+			let keyType: 'api_key' | 'oauth' | 'antigravity' = 'api_key';
+			if (effectivelyAntigravity) {
+				keyType = 'antigravity';
+			} else if (effectivelyOAuth) {
+				keyType = 'oauth';
+			}
+
 			await this.recordUsage(
 				apiKey,
-				effectivelyOAuth ? "oauth" : "api_key",
+				keyType,
 				userAccessToken || '',
 				response.ok,
 				response.status === 429,
@@ -1138,6 +1148,68 @@ export class KeyRotator {
 						.run();
 				}
 			}
+
+			// Sync Antigravity Credentials
+			const agyRows = await db.prepare('SELECT access_token, antigravity_credentials, antigravity_key_states FROM api_credentials').all<{ access_token: string, antigravity_credentials: string, antigravity_key_states: string }>();
+			for (const row of (agyRows.results || [])) {
+				const access_token = row.access_token as string || '';
+				const agy_credentials = row.antigravity_credentials as string || '';
+				const agy_key_states = JSON.parse(row.antigravity_key_states || '[]') as KeyState[];
+
+				if (!agy_credentials) continue;
+
+				const agyParts = parseCsvList(agy_credentials);
+				let updatedAgyKeyStates = [...agy_key_states];
+				while (updatedAgyKeyStates.length < agyParts.length) {
+					updatedAgyKeyStates.push({});
+				}
+
+				let anyAgyChange = false;
+
+				const agyPromises = agyParts.map(async (part, i) => {
+					try {
+						const creds = parseAntigravityCredentials(part);
+						if (!creds.refresh_token) return;
+
+						const activeAccessToken = await getOAuthAccessToken(this.ctx.state, creds, this.ctx);
+						if (!activeAccessToken) return;
+
+						let projectId = creds.project_id;
+						const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(projectId || '');
+						if (!projectId || projectId === 'default' || isUuid) {
+							projectId = await discoverProjectId(activeAccessToken, creds.email, true);
+							await saveDiscoveredProjectId(creds, projectId, this.ctx);
+						}
+						if (!projectId) return;
+
+						const supportedModels = await fetchAvailableModelsForToken(activeAccessToken, projectId);
+						if (supportedModels.length > 0) {
+							const newAvailableModels = supportedModels.map(b => b.modelId).filter(Boolean);
+							const oldAvailableModels = updatedAgyKeyStates[i].availableModels || [];
+							const availableModelsChanged = JSON.stringify(newAvailableModels.sort()) !== JSON.stringify([...oldAvailableModels].sort());
+
+							if (availableModelsChanged) {
+								updatedAgyKeyStates[i] = {
+									...updatedAgyKeyStates[i],
+									availableModels: newAvailableModels,
+									lastModelSyncTime: Date.now()
+								};
+								anyAgyChange = true;
+							}
+						}
+					} catch (err) {
+						console.error(`Error syncing models for Antigravity credential at index ${i} in row ${access_token}:`, err);
+					}
+				});
+
+				await Promise.all(agyPromises);
+
+				if (anyAgyChange) {
+					await db.prepare('UPDATE api_credentials SET antigravity_key_states = ? WHERE access_token = ?')
+						.bind(JSON.stringify(updatedAgyKeyStates), access_token)
+						.run();
+				}
+			}
 		} catch (e) {
 			console.error('Failed to sync available models for all credentials:', e);
 		}
@@ -1277,7 +1349,7 @@ export class KeyRotator {
 		if (requestUrl.pathname === '/admin/key-diagnose' && request.method === 'POST') {
 			if (!userAccessToken) return createErrorResponse('Unauthorized', 401, protocol);
 
-			const { key, isOAuth, model } = (await request.json()) as { key: string; isOAuth: boolean; model?: string };
+			const { key, isOAuth, isAntigravity, model } = (await request.json()) as { key: string; isOAuth?: boolean; isAntigravity?: boolean; model?: string };
 			if (!key) return createErrorResponse('Key is required', 400, protocol);
 
 			const startTime = Date.now();
@@ -1287,18 +1359,70 @@ export class KeyRotator {
 			// Clean and resolve the model name
 			let modelToUse = model;
 			if (!modelToUse) {
-				modelToUse = isOAuth ? 'gemini-3.1-flash-lite' : 'gemini-3.1-flash-lite';
+				modelToUse = (isOAuth || isAntigravity) ? 'gemini-3.1-flash-lite' : 'gemini-3.1-flash-lite';
 			}
 			if (modelToUse.startsWith('models/')) {
 				modelToUse = modelToUse.replace('models/', '');
 			}
 
 			if (modelToUse === 'unknown' || modelToUse === '_general_') {
-				modelToUse = isOAuth ? 'gemini-3.1-flash-lite' : 'gemini-3.1-flash-lite';
+				modelToUse = (isOAuth || isAntigravity) ? 'gemini-3.1-flash-lite' : 'gemini-3.1-flash-lite';
 			}
 
 			try {
-				if (isOAuth) {
+				if (isAntigravity) {
+					const credentials = parseAntigravityCredentials(key);
+					const token = await getOAuthAccessToken(this.ctx.state, credentials, this.ctx);
+					
+					testUrl = `https://cloudcode-pa.googleapis.com/v1internal:generateContent`;
+					const outgoingHeaders = getAntigravityHeaders(token);
+					
+					let projectId = credentials.project_id;
+					const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(projectId || '');
+					if (!projectId || projectId === 'default' || isUuid) {
+						projectId = await discoverProjectId(token, credentials.email, true);
+						await saveDiscoveredProjectId(credentials, projectId, this.ctx);
+					}
+					
+					const companionBody = {
+						project: projectId,
+						model: modelToUse,
+						user_prompt_id: 'diagnose-' + Math.random().toString(36).substring(2, 15),
+						request: {
+							contents: [{ role: 'user', parts: [{ text: 'Hi!' }] }]
+						}
+					};
+
+					const response = await fetch(testUrl, {
+						method: 'POST',
+						headers: outgoingHeaders,
+						body: JSON.stringify(companionBody)
+					});
+					
+					const latency = Date.now() - startTime;
+					if (response.ok) {
+						let greeting = "";
+						try {
+							const resJson = await response.json() as any;
+							const candidates = resJson.candidates || resJson.response?.candidates;
+							if (candidates && candidates[0]?.content?.parts?.[0]?.text) {
+								greeting = candidates[0].content.parts[0].text.trim();
+							}
+						} catch (e) {
+							// Ignore
+						}
+						return new Response(JSON.stringify({ success: true, status: response.status, latency, greeting, model: modelToUse }), {
+							headers: JSON_HEADERS
+						});
+					} else {
+						const errorJson = await response.json<any>().catch(() => ({}));
+						const errMsg = errorJson?.error?.message || 'Upstream returned error';
+						return new Response(JSON.stringify({ success: false, status: response.status, latency, error: errMsg }), {
+							status: response.status,
+							headers: JSON_HEADERS
+						});
+					}
+				} else if (isOAuth) {
 					const defaultClientId = this.ctx.env.OAUTH_CLIENT_ID;
 					const defaultClientSecret = this.ctx.env.OAUTH_CLIENT_SECRET;
 					const credentials = parseOAuthCredentials(key, defaultClientId, defaultClientSecret);
@@ -1461,8 +1585,10 @@ export class KeyRotator {
 						return new Response(JSON.stringify({ error: 'Failed to refresh Antigravity token' }), { status: 400, headers: JSON_HEADERS });
 					}
 					let projectId = creds.project_id;
-					if (!projectId) {
-						projectId = await discoverProjectId(activeAccessToken, creds.email);
+					const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(projectId || '');
+					if (!projectId || projectId === 'default' || isUuid) {
+						projectId = await discoverProjectId(activeAccessToken, creds.email, true);
+						await saveDiscoveredProjectId(creds, projectId, this.ctx);
 					}
 					if (!projectId) {
 						return new Response(JSON.stringify({ error: 'Failed to discover Google Cloud Project ID' }), { status: 400, headers: JSON_HEADERS });
@@ -2219,14 +2345,25 @@ async fetch(request: Request): Promise<Response> {
 			authMode ?? null,
 			model ?? null,
 			savedTokensCount,
-			isMetadataRequest
+			isMetadataRequest,
+			effectivelyAntigravity
 		);
 
 		let stateChanged = false;
 		let attemptCount = 1;
-		let activeKeys = effectivelyOAuth ? oauthCredentialsList : apiKeys;
-		let activeStates = effectivelyOAuth ? oauthKeyStates : keyStates;
-		let activeIndex = effectivelyOAuth ? (oauthIndexToUse ?? 0) : (keyIndexToUse ?? 0);
+		let activeKeys = apiKeys;
+		let activeStates = keyStates;
+		let activeIndex = keyIndexToUse ?? 0;
+
+		if (effectivelyAntigravity) {
+			activeKeys = antigravityCredentialsList;
+			activeStates = antigravityKeyStates;
+			activeIndex = antigravityIndexToUse ?? 0;
+		} else if (effectivelyOAuth) {
+			activeKeys = oauthCredentialsList;
+			activeStates = oauthKeyStates;
+			activeIndex = oauthIndexToUse ?? 0;
+		}
 
 		// Calculate total available retries across the current active pool
 		// We limit retries to at most 3 or the number of keys available
@@ -2398,7 +2535,13 @@ async fetch(request: Request): Promise<Response> {
 
 			// Update indices and key
 			activeIndex = nextIndex;
-			if (effectivelyOAuth) {
+			if (effectivelyAntigravity) {
+				antigravityIndexToUse = nextIndex;
+				// Update index in DO storage immediately after selection during retry
+				const nextAgyIndex = (antigravityIndexToUse + 1) % antigravityCredentialsList.length;
+				this.currentAntigravityIndex = nextAgyIndex;
+				this.ctx.state.waitUntil(this.storage.put(`antigravity_index_${userAccessToken}`, nextAgyIndex));
+			} else if (effectivelyOAuth) {
 				oauthIndexToUse = nextIndex;
 				// Update index in DO storage immediately after selection during retry
 				const nextOauthIndex = (oauthIndexToUse + 1) % oauthCredentialsList.length;
@@ -2433,7 +2576,8 @@ async fetch(request: Request): Promise<Response> {
 				authMode ?? null,
 				model ?? null,
 				savedTokensCount,
-				isMetadataRequest
+				isMetadataRequest,
+				effectivelyAntigravity
 			);
 		}
 

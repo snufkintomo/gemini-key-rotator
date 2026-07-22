@@ -97,4 +97,122 @@ describe('Antigravity Module Unit & Integration Tests', () => {
 		expect(authUrl).toContain('experimentsandconfigs');
 		expect(authUrl).toContain('cclog');
 	});
+
+	it('should execute /admin/key-diagnose with isAntigravity: true on KeyRotator without ReferenceError', async () => {
+		const { KeyRotator } = await import('./rotator');
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = vi.fn().mockImplementation(async (url: any) => {
+			if (typeof url === 'string' && url.includes('oauth2.googleapis.com')) {
+				return new Response(JSON.stringify({ access_token: 'fake-access-token', expires_in: 3600 }));
+			}
+			return new Response(JSON.stringify({
+				candidates: [{ content: { parts: [{ text: 'Healthy Antigravity Key' }] } }]
+			}));
+		});
+
+		const mockState = {
+			storage: {
+				get: vi.fn().mockResolvedValue(null),
+				put: vi.fn(),
+			},
+			waitUntil: vi.fn()
+		} as any;
+
+		const mockEnv = {
+			DB: {
+				prepare: vi.fn().mockReturnValue({
+					bind: vi.fn().mockReturnThis(),
+					first: vi.fn().mockResolvedValue({
+						antigravity_credentials: 'id:secret:refresh:proj:email@gmail.com',
+						antigravity_key_states: '[]'
+					}),
+					run: vi.fn().mockResolvedValue({ meta: { changes: 1 } })
+				})
+			}
+		} as any;
+
+		const rotator = new KeyRotator(mockState, mockEnv);
+
+		const request = new Request('https://api.rotator.org/admin/key-diagnose', {
+			method: 'POST',
+			headers: { 'X-Access-Token': 'test-token', 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				access_token: 'test-token',
+				key: 'id:secret:refresh:proj:email@gmail.com',
+				isAntigravity: true
+			})
+		});
+
+		let response: Response;
+		try {
+			response = await rotator.fetch(request);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+
+		expect(response.status).toBe(200);
+		const data = await response.json() as any;
+		expect(data.success).toBe(true);
+		expect(data.greeting).toBe('Healthy Antigravity Key');
+	});
+
+	it('should execute /admin/key-models with isAntigravity: true on KeyRotator without ReferenceError', async () => {
+		const { KeyRotator } = await import('./rotator');
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = vi.fn().mockImplementation(async (url: any) => {
+			if (typeof url === 'string' && url.includes('oauth2.googleapis.com')) {
+				return new Response(JSON.stringify({ access_token: 'fake-access-token', expires_in: 3600 }));
+			}
+			return new Response(JSON.stringify({
+				buckets: [
+					{ modelId: 'gemini-2.5-pro', remainingAmount: '100' }
+				]
+			}));
+		});
+
+		const mockState = {
+			storage: {
+				get: vi.fn().mockResolvedValue(null),
+				put: vi.fn(),
+			},
+			waitUntil: vi.fn()
+		} as any;
+
+		const mockEnv = {
+			DB: {
+				prepare: vi.fn().mockReturnValue({
+					bind: vi.fn().mockReturnThis(),
+					first: vi.fn().mockResolvedValue({
+						antigravity_credentials: 'id:secret:refresh:proj:email@gmail.com',
+						antigravity_key_states: '[]'
+					}),
+					run: vi.fn().mockResolvedValue({ meta: { changes: 1 } })
+				})
+			}
+		} as any;
+
+		const rotator = new KeyRotator(mockState, mockEnv);
+
+		const request = new Request('https://api.rotator.org/admin/key-models', {
+			method: 'POST',
+			headers: { 'X-Access-Token': 'test-token', 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				access_token: 'test-token',
+				key: 'id:secret:refresh:proj:email@gmail.com',
+				isAntigravity: true
+			})
+		});
+
+		let response: Response;
+		try {
+			response = await rotator.fetch(request);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+
+		expect(response.status).toBe(200);
+		const data = await response.json() as any;
+		expect(data.models).toBeDefined();
+		expect(data.models.length).toBeGreaterThan(0);
+	});
 });

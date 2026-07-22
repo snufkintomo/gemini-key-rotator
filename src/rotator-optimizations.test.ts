@@ -111,6 +111,22 @@ describe('KeyRotator Architectural Optimizations & Performance Tests (TDD)', () 
     });
 
     it('should run background oauth model synchronization in parallel', async () => {
+        const originalFetch = globalThis.fetch;
+        globalThis.fetch = vi.fn().mockImplementation((url) => {
+            if (url.includes('oauth2/v4/token')) {
+                return Promise.resolve(new Response(JSON.stringify({
+                    access_token: 'fake-access-token',
+                    expires_in: 3600
+                })));
+            }
+            if (url.includes('v1internal:retrieveUserQuota')) {
+                return Promise.resolve(new Response(JSON.stringify({
+                    buckets: [{ modelId: 'gemini-1.5-pro', remainingAmount: 100 }]
+                })));
+            }
+            return Promise.resolve(new Response(JSON.stringify({})));
+        });
+
         const rotator = new KeyRotator(mockState, mockEnv);
         
         // Mock DB results returning one row with multiple OAuth parts
@@ -123,9 +139,13 @@ describe('KeyRotator Architectural Optimizations & Performance Tests (TDD)', () 
             }]
         });
 
-        // We can spy on global fetch or helper endpoints if they are called
-        // Let's verify sync executes without throwing and finishes correctly.
-        await expect(rotator.syncAvailableModelsForAllCredentials()).resolves.not.toThrow();
+        try {
+            // We can spy on global fetch or helper endpoints if they are called
+            // Let's verify sync executes without throwing and finishes correctly.
+            await expect(rotator.syncAvailableModelsForAllCredentials()).resolves.not.toThrow();
+        } finally {
+            globalThis.fetch = originalFetch;
+        }
     });
 
     it('should redact sensitive credentials from logged headers and URL query parameters in writeCombinedLog', async () => {
