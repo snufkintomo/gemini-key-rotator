@@ -23,11 +23,14 @@ describe('Antigravity Protocol Utilities', () => {
 
 	it('should generate official 100% authentic Antigravity upstream headers', () => {
 		const token = 'fake-access-token-123';
-		const headers = getAntigravityHeaders(token);
+		const headers = getAntigravityHeaders(token, 'proj-abc');
 
 		expect(headers['Authorization']).toBe('Bearer fake-access-token-123');
 		expect(headers['User-Agent']).toBe('antigravity/1.0.5 darwin/arm64');
-		expect(headers['X-Goog-Api-Client']).toBe('google-api-nodejs-client/9.15.1');
+		expect(headers['x-client-name']).toBe('antigravity');
+		expect(headers['x-client-version']).toBe('1.0.5');
+		expect(headers['x-goog-user-project']).toBe('proj-abc');
+		expect(headers['X-Goog-Api-Client']).toBeUndefined();
 		expect(headers['Client-Metadata']).toBe('{"ideType":"ANTIGRAVITY"}');
 		expect(headers['Content-Type']).toBe('application/json');
 	});

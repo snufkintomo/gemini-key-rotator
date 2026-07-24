@@ -1,5 +1,5 @@
 import { OAuthCredentials, SystemContext } from '../types';
-import { getOAuthAccessToken, discoverProjectId, saveDiscoveredProjectId } from './oauth';
+import { getOAuthAccessToken, discoverProjectId, saveDiscoveredProjectId, fetchWithEndpointFallback, CLOUDCODE_ENDPOINTS } from './oauth';
 import { fetchAvailableModelsForToken } from './oauth';
 import { safeLiteCompress, generateUuid } from './gemini';
 import { resolveModelWithOAuthSupport } from './models';
@@ -35,7 +35,6 @@ export function getAntigravityHeaders(accessToken: string, projectId?: string): 
 		'Client-Metadata': JSON.stringify({ ideType: 'ANTIGRAVITY' }),
 		'x-client-name': 'antigravity',
 		'x-client-version': '1.0.5',
-		'X-Goog-Api-Client': 'google-api-nodejs-client/9.15.1',
 	};
 
 	if (projectId && projectId !== 'default' && projectId !== 'test-project') {
@@ -112,6 +111,11 @@ export async function handleAntigravityCli(
 			await saveDiscoveredProjectId(credentials, projectId, ctx);
 		}
 
+		if (projectId && projectId !== 'default' && !isUuid && projectId !== 'test-project') {
+			const { enableCompanionApi } = await import('./oauth');
+			await enableCompanionApi(accessToken, projectId);
+		}
+
 		// Handle OAuth Model List for Antigravity (via retrieveUserQuota)
 		if (requestUrl.pathname.includes('/oauth/models') || requestUrl.pathname.includes('/antigravity/models')) {
 			const buckets = await fetchAvailableModelsForToken(accessToken, projectId);
@@ -176,95 +180,87 @@ export async function handleAntigravityCli(
 		const methodVerb = isStreaming ? 'streamGenerateContent' : 'generateContent';
 		const promptId = generateUuid();
 
-		const wrappedBody = {
-			project: projectId,
+		let effectiveProjectId = projectId;
+		if (!effectiveProjectId || effectiveProjectId === 'default' || isUuid) {
+			effectiveProjectId = 'test-project';
+		}
+
+		const wrappedBody: any = {
+			project: effectiveProjectId,
 			model: effectiveModel,
+			userAgent: 'antigravity',
+			requestId: promptId,
 			user_prompt_id: promptId,
 			request: internalRequest,
 		};
 
+		const pathAndQuery = `:${methodVerb}${isStreaming ? '?alt=sse' : ''}`;
 		const outgoingHeaders = getAntigravityHeaders(accessToken, projectId);
 
-		let lastResponse: Response | null = null;
-
-		for (let i = 0; i < ANTIGRAVITY_ENDPOINTS.length; i++) {
-			const endpointBase = ANTIGRAVITY_ENDPOINTS[i];
-			const url = `${endpointBase}:${methodVerb}${isStreaming ? '?alt=sse' : ''}`;
-
-			const outgoingRequest = new Request(url, {
+		let upstreamResponse = await fetchWithEndpointFallback(
+			pathAndQuery,
+			{
 				method: 'POST',
 				headers: outgoingHeaders,
 				body: JSON.stringify(wrappedBody),
-			});
+			},
+			{
+				fetchFn: (url, reqInit) => proxyRequest(new Request(url, reqInit), isStreaming, accessToken),
+				retryWithoutUserProjectOn403: true,
+			}
+		);
 
-			const upstreamResponse = await proxyRequest(outgoingRequest, isStreaming, accessToken);
-
-			if (upstreamResponse.ok || (upstreamResponse.status < 500 && upstreamResponse.status !== 429 && upstreamResponse.status !== 403)) {
-				if (!isStreaming && upstreamResponse.ok) {
-					try {
-						const responseData = await upstreamResponse.json() as any;
-						const actualData = responseData.response || responseData;
-						return new Response(JSON.stringify(actualData), {
-							status: upstreamResponse.status,
-							headers: { 'Content-Type': 'application/json' },
-						});
-					} catch (e) {
-						return upstreamResponse;
-					}
+		// Self-healing Retry for 403 (SERVICE_DISABLED / enable Companion API)
+		if (!upstreamResponse.ok && upstreamResponse.status === 403) {
+			const { enableCompanionApi } = await import('./oauth');
+			if (effectiveProjectId) {
+				await enableCompanionApi(accessToken, effectiveProjectId);
+			}
+			upstreamResponse = await fetchWithEndpointFallback(
+				pathAndQuery,
+				{
+					method: 'POST',
+					headers: outgoingHeaders,
+					body: JSON.stringify(wrappedBody),
+				},
+				{
+					fetchFn: (url, reqInit) => proxyRequest(new Request(url, reqInit), isStreaming, accessToken),
+					retryWithoutUserProjectOn403: true,
 				}
+			);
+
+			if (!upstreamResponse.ok && upstreamResponse.status === 403 && wrappedBody.project) {
+				delete wrappedBody.project;
+				upstreamResponse = await fetchWithEndpointFallback(
+					pathAndQuery,
+					{
+						method: 'POST',
+						headers: outgoingHeaders,
+						body: JSON.stringify(wrappedBody),
+					},
+					{
+						fetchFn: (url, reqInit) => proxyRequest(new Request(url, reqInit), isStreaming, accessToken),
+						retryWithoutUserProjectOn403: true,
+					}
+				);
+			}
+		}
+
+		// Handle unwrapping for non-streaming Companion API responses
+		if (!isStreaming && upstreamResponse.ok) {
+			try {
+				const responseData = await upstreamResponse.json() as any;
+				const actualData = responseData.response || responseData;
+				return new Response(JSON.stringify(actualData), {
+					status: upstreamResponse.status,
+					headers: { 'Content-Type': 'application/json' },
+				});
+			} catch (e) {
 				return upstreamResponse;
 			}
-
-			// Handle 403: retry without x-goog-user-project if present
-			if (upstreamResponse.status === 403 && outgoingHeaders['x-goog-user-project']) {
-				const retryHeaders = { ...outgoingHeaders };
-				delete retryHeaders['x-goog-user-project'];
-				const retryReq = new Request(url, {
-					method: 'POST',
-					headers: retryHeaders,
-					body: JSON.stringify(wrappedBody),
-				});
-				const retryRes = await proxyRequest(retryReq, isStreaming, accessToken);
-				if (retryRes.ok || (retryRes.status < 500 && retryRes.status !== 429)) {
-					if (!isStreaming && retryRes.ok) {
-						try {
-							const responseData = await retryRes.json() as any;
-							const actualData = responseData.response || responseData;
-							return new Response(JSON.stringify(actualData), {
-								status: retryRes.status,
-								headers: { 'Content-Type': 'application/json' },
-							});
-						} catch (e) {
-							return retryRes;
-						}
-					}
-					return retryRes;
-				}
-				lastResponse = retryRes;
-			} else {
-				lastResponse = upstreamResponse;
-			}
-
-			console.warn(`Antigravity Endpoint Fallback: ${endpointBase} returned ${upstreamResponse.status}, trying next fallback endpoint...`);
 		}
 
-		if (lastResponse) {
-			if (!isStreaming && lastResponse.ok) {
-				try {
-					const responseData = await lastResponse.json() as any;
-					const actualData = responseData.response || responseData;
-					return new Response(JSON.stringify(actualData), {
-						status: lastResponse.status,
-						headers: { 'Content-Type': 'application/json' },
-					});
-				} catch (e) {
-					return lastResponse;
-				}
-			}
-			return lastResponse;
-		}
-
-		return new Response('Antigravity All Endpoints Exhausted', { status: 503 });
+		return upstreamResponse;
 	} catch (e: any) {
 		return new Response(`Antigravity Error: ${e.message}`, { status: 500 });
 	}

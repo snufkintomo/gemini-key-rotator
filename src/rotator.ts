@@ -13,7 +13,7 @@ import { createErrorResponse, Protocol, JSON_HEADERS } from './utils/errors';
 import { StorageHelper } from './utils/storage';
 import { getStandardRotationIndex, parseCredentials, parseCsvList } from './utils/credentials';
 import { sendInvalidTokenEmail, sendExhaustedEmail } from './utils/email';
-import { getOAuthAccessToken, parseOAuthCredentials, discoverProjectId, saveDiscoveredProjectId, fetchAvailableModelsForToken } from './utils/oauth';
+import { getOAuthAccessToken, parseOAuthCredentials, discoverProjectId, saveDiscoveredProjectId, fetchAvailableModelsForToken, fetchWithEndpointFallback } from './utils/oauth';
 import { parseAntigravityCredentials, getAntigravityHeaders, handleAntigravityCli } from './utils/antigravity';
 import { writeCombinedLog } from './utils/logger';
 
@@ -1359,14 +1359,14 @@ export class KeyRotator {
 			// Clean and resolve the model name
 			let modelToUse = model;
 			if (!modelToUse) {
-				modelToUse = (isOAuth || isAntigravity) ? 'gemini-3.1-flash-lite' : 'gemini-3.1-flash-lite';
+				modelToUse = (isOAuth || isAntigravity) ? 'gemini-2.5-flash' : 'gemini-2.5-flash';
 			}
 			if (modelToUse.startsWith('models/')) {
 				modelToUse = modelToUse.replace('models/', '');
 			}
 
 			if (modelToUse === 'unknown' || modelToUse === '_general_') {
-				modelToUse = (isOAuth || isAntigravity) ? 'gemini-3.1-flash-lite' : 'gemini-3.1-flash-lite';
+				modelToUse = (isOAuth || isAntigravity) ? 'gemini-2.5-flash' : 'gemini-2.5-flash';
 			}
 
 			try {
@@ -1374,30 +1374,105 @@ export class KeyRotator {
 					const credentials = parseAntigravityCredentials(key);
 					const token = await getOAuthAccessToken(this.ctx.state, credentials, this.ctx);
 					
-					testUrl = `https://cloudcode-pa.googleapis.com/v1internal:generateContent`;
-					const outgoingHeaders = getAntigravityHeaders(token);
-					
 					let projectId = credentials.project_id;
 					const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(projectId || '');
 					if (!projectId || projectId === 'default' || isUuid) {
 						projectId = await discoverProjectId(token, credentials.email, true);
 						await saveDiscoveredProjectId(credentials, projectId, this.ctx);
 					}
+
+					// Proactively enable Companion API for custom GCP projects
+					if (projectId && projectId !== 'default' && !isUuid && projectId !== 'test-project') {
+						const { enableCompanionApi } = await import('./utils/oauth');
+						await enableCompanionApi(token, projectId);
+					}
 					
-					const companionBody = {
-						project: projectId,
+					const outgoingHeaders = getAntigravityHeaders(token, projectId);
+
+					let effectiveProjectId = projectId;
+					if (!effectiveProjectId || effectiveProjectId === 'default' || isUuid) {
+						effectiveProjectId = 'test-project';
+					}
+
+					const reqId = 'diagnose-' + Math.random().toString(36).substring(2, 15);
+					const companionBody: any = {
+						project: effectiveProjectId,
 						model: modelToUse,
-						user_prompt_id: 'diagnose-' + Math.random().toString(36).substring(2, 15),
+						userAgent: 'antigravity',
+						requestId: reqId,
+						user_prompt_id: reqId,
 						request: {
 							contents: [{ role: 'user', parts: [{ text: 'Hi!' }] }]
 						}
 					};
 
-					const response = await fetch(testUrl, {
+					let response = await fetchWithEndpointFallback(':generateContent', {
 						method: 'POST',
 						headers: outgoingHeaders,
 						body: JSON.stringify(companionBody)
-					});
+					}, { retryWithoutUserProjectOn403: true });
+
+					// Self-healing Retry for 403 / 500 (SERVICE_DISABLED / enable Companion API)
+					if (!response.ok && (response.status === 403 || response.status === 500)) {
+						const { enableCompanionApi } = await import('./utils/oauth');
+						if (effectiveProjectId && effectiveProjectId !== 'test-project') {
+							await enableCompanionApi(token, effectiveProjectId);
+						}
+						response = await fetchWithEndpointFallback(':generateContent', {
+							method: 'POST',
+							headers: outgoingHeaders,
+							body: JSON.stringify(companionBody)
+						}, { retryWithoutUserProjectOn403: true });
+
+						if (!response.ok && (response.status === 403 || response.status === 500) && companionBody.project) {
+							delete companionBody.project;
+							response = await fetchWithEndpointFallback(':generateContent', {
+								method: 'POST',
+								headers: outgoingHeaders,
+								body: JSON.stringify(companionBody)
+							}, { retryWithoutUserProjectOn403: true });
+						}
+					}
+
+					// Self-healing Retry 1: If 500, retry without project field if present
+					if (!response.ok && response.status === 500 && companionBody.project) {
+						delete companionBody.project;
+						response = await fetchWithEndpointFallback(':generateContent', {
+							method: 'POST',
+							headers: outgoingHeaders,
+							body: JSON.stringify(companionBody)
+						}, { retryWithoutUserProjectOn403: true });
+					}
+
+					// Self-healing Retry 2: If still 500, fallback model to gemini-2.5-pro
+					if (!response.ok && response.status === 500 && modelToUse !== 'gemini-2.5-pro') {
+						companionBody.model = 'gemini-2.5-pro';
+						response = await fetchWithEndpointFallback(':generateContent', {
+							method: 'POST',
+							headers: outgoingHeaders,
+							body: JSON.stringify(companionBody)
+						}, { retryWithoutUserProjectOn403: true });
+						if (response.ok) modelToUse = 'gemini-2.5-pro';
+					}
+
+					// Self-healing Retry 3: Force fresh project re-discovery & re-onboarding if initial project was invalid/stale
+					if (!response.ok && response.status === 500) {
+						const freshProjectId = await discoverProjectId(token, credentials.email, true);
+						if (freshProjectId && freshProjectId !== 'default') {
+							await saveDiscoveredProjectId(credentials, freshProjectId, this.ctx);
+							companionBody.project = freshProjectId;
+							companionBody.model = 'gemini-2.5-flash';
+							const retryRes = await fetchWithEndpointFallback(':generateContent', {
+								method: 'POST',
+								headers: getAntigravityHeaders(token, freshProjectId),
+								body: JSON.stringify(companionBody)
+							}, { retryWithoutUserProjectOn403: true });
+							if (retryRes.ok) {
+								response = retryRes;
+								modelToUse = 'gemini-2.5-flash';
+							}
+						}
+					}
 					
 					const latency = Date.now() - startTime;
 					if (response.ok) {
@@ -1416,7 +1491,37 @@ export class KeyRotator {
 						});
 					} else {
 						const errorJson = await response.json<any>().catch(() => ({}));
-						const errMsg = errorJson?.error?.message || 'Upstream returned error';
+						let errMsg = errorJson?.error?.message || 'Upstream returned error';
+
+						// Permanent Companion API Diagnostic Probe on Failure
+						try {
+							const probeHeaders = getAntigravityHeaders(token, projectId);
+							const loadRes = await fetchWithEndpointFallback(':loadCodeAssist', {
+								method: 'POST',
+								headers: probeHeaders,
+								body: JSON.stringify({ metadata: { ideType: 'ANTIGRAVITY' } }),
+							});
+							const loadText = await loadRes.text();
+
+							const onboardRes = await fetchWithEndpointFallback(':onboardUser', {
+								method: 'POST',
+								headers: probeHeaders,
+								body: JSON.stringify({ tierId: 'free-tier', metadata: { ideType: 'ANTIGRAVITY' } }),
+							});
+							const onboardText = await onboardRes.text();
+
+							const quotaRes = await fetchWithEndpointFallback(':retrieveUserQuota', {
+								method: 'POST',
+								headers: probeHeaders,
+								body: JSON.stringify({}),
+							});
+							const quotaText = await quotaRes.text();
+
+							errMsg += ` [Load:${loadRes.status} ${loadText.replace(/\s+/g, ' ').slice(0, 120)}] [Onboard:${onboardRes.status} ${onboardText.replace(/\s+/g, ' ').slice(0, 120)}] [Quota:${quotaRes.status} ${quotaText.replace(/\s+/g, ' ').slice(0, 120)}]`;
+						} catch (pErr) {
+							// Ignore probe error
+						}
+
 						return new Response(JSON.stringify({ success: false, status: response.status, latency, error: errMsg }), {
 							status: response.status,
 							headers: JSON_HEADERS
@@ -1430,8 +1535,6 @@ export class KeyRotator {
 					// This will refresh the OAuth token if necessary and return a valid access token
 					const token = await getOAuthAccessToken(this.ctx.state, credentials, this.ctx);
 					
-					// OAuth Key test using the actual companion API
-					testUrl = `https://cloudcode-pa.googleapis.com/v1internal:generateContent`;
 					headersObj['Authorization'] = `Bearer ${token}`;
 					headersObj['Content-Type'] = 'application/json';
 					headersObj['User-Agent'] = 'google-api-nodejs-client/9.15.1';
@@ -1439,25 +1542,39 @@ export class KeyRotator {
 					headersObj['Client-Metadata'] = 'ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI';
 					
 					let projectId = credentials.project_id;
-					if (!projectId || projectId === 'default') {
+					const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(projectId || '');
+					if (!projectId || projectId === 'default' || isUuid) {
 						projectId = await discoverProjectId(token);
 						await saveDiscoveredProjectId(credentials, projectId, this.ctx);
 					}
 					
-					const companionBody = {
-						project: projectId,
-						model: modelToUse, // gemini-3-flash-preview
+					const companionBody: any = {
+						model: modelToUse,
 						user_prompt_id: 'diagnose-' + Math.random().toString(36).substring(2, 15),
 						request: {
 							contents: [{ role: 'user', parts: [{ text: 'Hi!' }] }]
 						}
 					};
+					if (projectId && projectId !== 'default' && !isUuid) {
+						companionBody.project = projectId;
+					}
 
-					const response = await fetch(testUrl, {
+					let response = await fetchWithEndpointFallback(':generateContent', {
 						method: 'POST',
 						headers: headersObj,
 						body: JSON.stringify(companionBody)
 					});
+
+					// Retry with gemini-2.5-flash fallback if modelToUse was 3.1-flash-lite and returned 500
+					if (!response.ok && response.status === 500 && modelToUse !== 'gemini-2.5-flash') {
+						companionBody.model = 'gemini-2.5-flash';
+						response = await fetchWithEndpointFallback(':generateContent', {
+							method: 'POST',
+							headers: headersObj,
+							body: JSON.stringify(companionBody)
+						});
+						if (response.ok) modelToUse = 'gemini-2.5-flash';
+					}
 					
 					const latency = Date.now() - startTime;
 					if (response.ok) {
@@ -1807,14 +1924,20 @@ async fetch(request: Request): Promise<Response> {
 		if (request.method === 'POST') {
 			try {
 				requestBodyJson = await clonedRequest.clone().json();
-				if (requestBodyJson) {
-					cacheId = requestBodyJson.cachedContent;
+				if (requestBodyJson && requestBodyJson.cachedContent) {
+					if (typeof requestBodyJson.cachedContent === 'string') {
+						cacheId = requestBodyJson.cachedContent;
+					} else if (typeof requestBodyJson.cachedContent === 'object' && requestBodyJson.cachedContent.name) {
+						cacheId = requestBodyJson.cachedContent.name;
+					}
 				}
 			} catch (e) {
 				// Ignore
 			}
 		}
-		const sessionId = request.headers.get('X-Session-ID') || request.headers.get('X-Sticky-Session') || cacheId;
+		// Option B (Smart Hybrid): Restrict sticky key mapping ONLY to explicit native Gemini cachedContent handle.
+		// Ignore X-Session-ID / X-Sticky-Session headers so regular multi-turn chats rotate smoothly across the key pool.
+		const sessionId = cacheId;
 
 		// Check for Exact-Match Cache on non-streaming POST completions
 		let cacheHash: string | null = null;

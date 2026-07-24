@@ -3,6 +3,63 @@ import { SystemContext } from './context';
 import { sendInvalidTokenEmail } from './email';
 import { getAntigravityHeaders } from './antigravity';
 
+export const CLOUDCODE_ENDPOINTS = [
+	'https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal', // 1. Sandbox (優先)
+	'https://daily-cloudcode-pa.googleapis.com/v1internal',         // 2. Daily (備用)
+	'https://cloudcode-pa.googleapis.com/v1internal',               // 3. Prod (兜底)
+];
+
+/**
+ * Shared DRY helper function to execute Cloud Code Companion API calls across 3 endpoints:
+ * 1. Sandbox -> 2. Daily -> 3. Prod
+ */
+export async function fetchWithEndpointFallback(
+	pathAndQuery: string,
+	init: RequestInit,
+	options?: {
+		fetchFn?: (url: string, init: RequestInit) => Promise<Response>;
+		retryWithoutUserProjectOn403?: boolean;
+	}
+): Promise<Response> {
+	const customFetch = options?.fetchFn || ((u, i) => fetch(u, i));
+	let lastRes: Response | null = null;
+
+	for (let i = 0; i < CLOUDCODE_ENDPOINTS.length; i++) {
+		const url = `${CLOUDCODE_ENDPOINTS[i]}${pathAndQuery}`;
+		try {
+			const res = await customFetch(url, init);
+
+			// Return immediately if HTTP 2xx Success
+			if (res.ok) {
+				return res;
+			}
+
+			// Handle 403: retry without x-goog-user-project if requested and present
+			if (res.status === 403 && options?.retryWithoutUserProjectOn403) {
+				const headersObj = new Headers(init.headers);
+				if (headersObj.has('x-goog-user-project')) {
+					headersObj.delete('x-goog-user-project');
+					const retryRes = await customFetch(url, { ...init, headers: headersObj });
+					if (retryRes.ok) {
+						return retryRes;
+					}
+					lastRes = retryRes;
+				} else {
+					lastRes = res;
+				}
+			} else {
+				lastRes = res;
+			}
+
+			console.warn(`CloudCode Fallback: ${CLOUDCODE_ENDPOINTS[i]} returned ${res.status}, retrying next endpoint...`);
+		} catch (err) {
+			console.warn(`CloudCode Fallback Error on ${CLOUDCODE_ENDPOINTS[i]}:`, err);
+		}
+	}
+
+	return lastRes || new Response('CloudCode All Endpoints Exhausted', { status: 503 });
+}
+
 export async function refreshOAuthToken(
 	credentials: OAuthCredentials,
 	ctx?: SystemContext
@@ -126,8 +183,7 @@ export async function getOAuthAccessToken(
 				}
 				if (!activeProjectId) return;
 
-				const quotaUrl = 'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota';
-				const res = await fetch(quotaUrl, {
+				const res = await fetchWithEndpointFallback(':retrieveUserQuota', {
 					method: 'POST',
 					headers: {
 						Authorization: `Bearer ${accessToken}`,
@@ -245,18 +301,53 @@ export async function getOAuthAccessToken(
 	return tokenData.access_token;
 }
 
+export function extractTierId(loadData: any): string {
+	if (!loadData || typeof loadData !== 'object') return 'free-tier';
+	
+	if (Array.isArray(loadData.allowedTiers) && loadData.allowedTiers.length > 0) {
+		const defaultTier = loadData.allowedTiers.find((t: any) => t.isDefault) || loadData.allowedTiers[0];
+		if (defaultTier?.id) return defaultTier.id;
+	}
+
+	if (loadData.currentTier?.id) return loadData.currentTier.id;
+	if (loadData.paidTier?.id) return loadData.paidTier.id;
+
+	return 'free-tier';
+}
+
 export function extractProjectId(data: any): string | undefined {
 	if (!data || typeof data !== "object") return undefined;
+	
 	const direct = data.antigravityProjectId ?? data.projectId ?? data.backendProjectId ?? data.userDefinedCloudaicompanionProject ?? data.cloudaicompanionProject ?? data.project;
-	if (typeof direct === "string" && direct) return direct.trim();
-	if (direct && typeof direct === "object" && typeof direct.id === "string" && direct.id) return direct.id.trim();
+	
+	if (typeof direct === "string" && direct) {
+		const cleaned = direct.trim().replace(/^projects\//, '');
+		if (cleaned) return cleaned;
+	}
+	if (direct && typeof direct === "object") {
+		const val = direct.id ?? direct.projectId ?? direct.name;
+		if (typeof val === "string" && val) {
+			const cleaned = val.trim().replace(/^projects\//, '');
+			if (cleaned) return cleaned;
+		}
+	}
+
+	// Handle LRO onboardUser response object
+	if (data.response && typeof data.response === "object") {
+		const nestedFromResponse = extractProjectId(data.response);
+		if (nestedFromResponse) return nestedFromResponse;
+	}
+
 	for (const key of ["projects", "projectIds", "cloudaicompanionProjects"]) {
 		const value = data[key];
 		if (Array.isArray(value)) {
 			for (const item of value) {
 				const nested = extractProjectId(item);
 				if (nested) return nested;
-				if (typeof item === "string" && item) return item.trim();
+				if (typeof item === "string" && item) {
+					const cleaned = item.trim().replace(/^projects\//, '');
+					if (cleaned) return cleaned;
+				}
 			}
 		}
 	}
@@ -280,17 +371,18 @@ export async function discoverProjectId(accessToken: string, email?: string, isA
 
 	const metadataObj = isAntigravity ? { ideType: 'ANTIGRAVITY' } : { ideType: 'IDE_UNSPECIFIED' };
 
+	let loadData: any = null;
+
 	// 1. Try `/v1internal:loadCodeAssist` via Cloud Code Companion API
 	try {
-		const loadCodeAssistUrl = 'https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist';
-		const res = await fetch(loadCodeAssistUrl, {
+		const res = await fetchWithEndpointFallback(':loadCodeAssist', {
 			method: 'POST',
 			headers,
 			body: JSON.stringify({ metadata: metadataObj }),
 		});
 		if (res.ok) {
-			const data = await res.json() as any;
-			const pId = extractProjectId(data);
+			loadData = await res.json() as any;
+			const pId = extractProjectId(loadData);
 			if (pId) return pId;
 		}
 	} catch (err) {
@@ -299,8 +391,7 @@ export async function discoverProjectId(accessToken: string, email?: string, isA
 
 	// 2. Try `/v1internal:listCloudAICompanionProjects` via Cloud Code Companion API
 	try {
-		const listProjectsUrl = 'https://cloudcode-pa.googleapis.com/v1internal:listCloudAICompanionProjects';
-		const res = await fetch(listProjectsUrl, {
+		const res = await fetchWithEndpointFallback(':listCloudAICompanionProjects', {
 			method: 'POST',
 			headers,
 			body: JSON.stringify({}),
@@ -314,7 +405,13 @@ export async function discoverProjectId(accessToken: string, email?: string, isA
 		// Suppress and fall through
 	}
 
-	// 3. Fallback to global Cloud Resource Manager API
+	// 3. Check if account tier requires user-defined GCP project
+	const onboardTierId = extractTierId(loadData);
+	const requiresUserProject = loadData?.allowedTiers?.some((t: any) => t.userDefinedCloudaicompanionProject) || onboardTierId === 'standard-tier';
+
+	let gcpProjectId: string | undefined = undefined;
+
+	// Query Cloud Resource Manager API to discover user's active GCP projects if needed
 	try {
 		const projectUrl = 'https://cloudresourcemanager.googleapis.com/v1/projects?filter=lifecycleState:ACTIVE';
 		const response = await fetch(projectUrl, {
@@ -326,40 +423,83 @@ export async function discoverProjectId(accessToken: string, email?: string, isA
 		if (response.ok) {
 			const data = await response.json() as any;
 			const projects = data.projects || [];
-			// Prefer standard projects first (non-gen-lang-client)
 			const standardProjects = projects.filter((p: any) => p.projectId && !p.projectId.startsWith('gen-lang-client-'));
 			if (standardProjects.length > 0) {
-				const pId = standardProjects[0].projectId;
-				await enableCompanionApi(accessToken, pId);
-				return pId;
-			}
-			// Fallback to auto-generated AI Studio projects (gen-lang-client-*)
-			const aiStudioProjects = projects.filter((p: any) => p.projectId && p.projectId.startsWith('gen-lang-client-'));
-			if (aiStudioProjects.length > 0) {
-				const pId = aiStudioProjects[0].projectId;
-				await enableCompanionApi(accessToken, pId);
-				return pId;
+				gcpProjectId = standardProjects[0].projectId;
+			} else {
+				const aiStudioProjects = projects.filter((p: any) => p.projectId && p.projectId.startsWith('gen-lang-client-'));
+				if (aiStudioProjects.length > 0) {
+					gcpProjectId = aiStudioProjects[0].projectId;
+				}
 			}
 		}
 	} catch (err) {
 		// Suppress and fall through
 	}
 
-	// 4. Ultimate Fallback: Generate a stable, deterministic UUID-like Project ID based on the user's email address
-	// This matches the official Antigravity extension's behavior of generating a stable UUID project ID for consumer accounts!
-	try {
-		const seed = email || 'default-antigravity-seed';
-		const msgBuffer = new TextEncoder().encode(`antigravity:${seed}`);
-		const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
-		const hashArray = Array.from(new Uint8Array(hashBuffer));
-		const hex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-		// Format as UUID structure: 8-4-4-4-12
-		const stableUuid = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
-		return stableUuid;
-	} catch (err) {
-		// Fallback to a hardcoded stable UUID if Web Crypto fails
-		return 'c08e5c8e-b2ee-590d-9b51-78923bc4de61';
+	if (gcpProjectId) {
+		await enableCompanionApi(accessToken, gcpProjectId);
 	}
+
+	// 4. Try `/v1internal:onboardUser` (Official Gemini CLI / Antigravity onboarding endpoint)
+	try {
+		const onboardBody: any = {
+			tierId: onboardTierId,
+			metadata: metadataObj,
+		};
+
+		if (requiresUserProject || gcpProjectId) {
+			if (gcpProjectId) {
+				onboardBody.cloudaicompanionProject = gcpProjectId;
+				onboardBody.metadata = {
+					...metadataObj,
+					duetProject: gcpProjectId,
+				};
+			}
+		}
+
+		const res = await fetchWithEndpointFallback(':onboardUser', {
+			method: 'POST',
+			headers,
+			body: JSON.stringify(onboardBody),
+		});
+
+		if (res.ok) {
+			const data = await res.json() as any;
+			const pId = extractProjectId(data);
+			if (pId) return pId;
+
+			// Handle Async Long-Running Operation (LRO) polling if onboarding is pending
+			if (!data.done && data.name) {
+				const opName = data.name;
+				for (let poll = 0; poll < 5; poll++) {
+					await new Promise(r => setTimeout(r, 1000));
+					try {
+						const opRes = await fetchWithEndpointFallback(':getOperation', {
+							method: 'POST',
+							headers,
+							body: JSON.stringify({ name: opName }),
+						});
+						if (opRes.ok) {
+							const opData = await opRes.json() as any;
+							const pollPId = extractProjectId(opData);
+							if (pollPId) return pollPId;
+							if (opData.done) break;
+						}
+					} catch (e) {
+						break;
+					}
+				}
+			}
+		}
+	} catch (err) {
+		// Suppress and fall through
+	}
+
+	if (gcpProjectId) return gcpProjectId;
+
+	// 5. Ultimate Fallback: Return 'default'
+	return 'default';
 }
 
 export function parseOAuthCredentials(apiKey: string, defaultClientId?: string, defaultClientSecret?: string): OAuthCredentials {
@@ -457,7 +597,27 @@ export async function saveDiscoveredProjectId(
 }
 
 export async function enableCompanionApi(accessToken: string, projectId: string): Promise<boolean> {
+	if (!projectId || projectId === 'default' || projectId === 'test-project') return false;
 	try {
+		// 1. Official Code Assist Onboarding with cloudaicompanionProject & duetProject
+		try {
+			await fetchWithEndpointFallback(':onboardUser', {
+				method: 'POST',
+				headers: getAntigravityHeaders(accessToken, projectId),
+				body: JSON.stringify({
+					tierId: 'standard-tier',
+					cloudaicompanionProject: projectId,
+					metadata: {
+						ideType: 'ANTIGRAVITY',
+						duetProject: projectId,
+					},
+				}),
+			});
+		} catch (e) {
+			// Suppress and fall through
+		}
+
+		// 2. Direct Service Usage API Enablement
 		const url = `https://serviceusage.googleapis.com/v1/projects/${projectId}/services/cloudaicompanion.googleapis.com:enable`;
 		const res = await fetch(url, {
 			method: 'POST',
@@ -467,6 +627,10 @@ export async function enableCompanionApi(accessToken: string, projectId: string)
 			},
 			body: JSON.stringify({}),
 		});
+
+		// Wait 1.5s for Google system propagation
+		await new Promise(r => setTimeout(r, 1500));
+
 		return res.ok;
 	} catch (e) {
 		return false;
@@ -506,9 +670,8 @@ export interface OAuthBucket {
 }
 
 export async function fetchAvailableModelsForToken(accessToken: string, projectId: string): Promise<OAuthBucket[]> {
-	const url = `https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota`;
 	try {
-		const res = await fetch(url, {
+		const res = await fetchWithEndpointFallback(':retrieveUserQuota', {
 			method: 'POST',
 			headers: {
 				Authorization: `Bearer ${accessToken}`,

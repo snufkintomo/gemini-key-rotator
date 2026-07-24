@@ -1,4 +1,4 @@
-import { getOAuthAccessToken, discoverProjectId, parseOAuthCredentials, saveDiscoveredProjectId, fetchAvailableModelsForToken } from './oauth';
+import { getOAuthAccessToken, discoverProjectId, parseOAuthCredentials, saveDiscoveredProjectId, fetchAvailableModelsForToken, fetchWithEndpointFallback } from './oauth';
 import { parseStream, parseStreamFlush } from './streams';
 import { getGeminiModelForGemini, mapModelForInternalApi } from './models';
 import type { OAuthCredentials, KeyState } from '../types';
@@ -127,17 +127,18 @@ export async function handleGeminiCli(
 		const isStreaming =
 			requestUrl.pathname.includes(':stream') || requestUrl.pathname.includes('streamGenerateContent');
 		const methodVerb = isStreaming ? 'streamGenerateContent' : 'generateContent';
-		const url = `https://cloudcode-pa.googleapis.com/v1internal:${methodVerb}${
-			isStreaming ? '?alt=sse' : ''
-		}`;
 		const promptId = generateUuid();
 
-		const wrappedBody = {
-			project: projectId,
+		const wrappedBody: any = {
 			model: effectiveModel,
 			user_prompt_id: promptId,
 			request: internalRequest,
 		};
+		if (projectId && projectId !== 'default' && !isUuid) {
+			wrappedBody.project = projectId;
+		}
+
+		const pathAndQuery = `:${methodVerb}${isStreaming ? '?alt=sse' : ''}`;
 
 		const companionHeaders = {
 			'Content-Type': 'application/json',
@@ -145,14 +146,16 @@ export async function handleGeminiCli(
 			...CODE_ASSIST_HEADERS,
 		};
 
-		let response = await proxyRequest(
-			new Request(url, {
+		let response = await fetchWithEndpointFallback(
+			pathAndQuery,
+			{
 				method: 'POST',
 				headers: companionHeaders,
 				body: JSON.stringify(wrappedBody),
-			} as any),
-			isStreaming,
-			accessToken
+			},
+			{
+				fetchFn: (targetUrl, reqInit) => proxyRequest(new Request(targetUrl, reqInit as any), isStreaming, accessToken),
+			}
 		);
 
 		if (!response.ok) {

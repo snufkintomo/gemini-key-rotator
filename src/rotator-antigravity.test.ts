@@ -6,8 +6,10 @@ describe('Antigravity Module Unit & Integration Tests', () => {
 		const headers = getAntigravityHeaders('test-access-token');
 		expect(headers['Authorization']).toBe('Bearer test-access-token');
 		expect(headers['User-Agent']).toBe('antigravity/1.0.5 darwin/arm64');
+		expect(headers['x-client-name']).toBe('antigravity');
+		expect(headers['x-client-version']).toBe('1.0.5');
 		expect(headers['Client-Metadata']).toBe('{"ideType":"ANTIGRAVITY"}');
-		expect(headers['X-Goog-Api-Client']).toBe('google-api-nodejs-client/9.15.1');
+		expect(headers['X-Goog-Api-Client']).toBeUndefined();
 	});
 
 	it('should strip -agy model suffix and proxy request with Antigravity headers', async () => {

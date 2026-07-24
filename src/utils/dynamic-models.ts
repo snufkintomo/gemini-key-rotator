@@ -1,3 +1,5 @@
+import { fetchWithEndpointFallback } from './oauth';
+
 export function findDynamicModel(value: any, requestedId: string): string | undefined {
 	if (!value) return undefined;
 
@@ -58,16 +60,8 @@ export function findDynamicModel(value: any, requestedId: string): string | unde
 export async function fetchAvailableRuntimeModel(
 	token: string,
 	projectId: string,
-	requestedRuntimeModel: string,
-	endpoint = 'https://cloudcode-pa.googleapis.com'
+	requestedRuntimeModel: string
 ): Promise<string | undefined> {
-	// Candidate endpoints
-	const endpoints = [
-		endpoint,
-		'https://daily-cloudcode-pa.sandbox.googleapis.com'
-	];
-	const uniqueEndpoints = Array.from(new Set(endpoints));
-
 	const bodies = [{}, { cloudaicompanionProject: projectId }, { project: projectId }];
 	const headers = {
 		Authorization: `Bearer ${token}`,
@@ -77,21 +71,19 @@ export async function fetchAvailableRuntimeModel(
 		'Client-Metadata': 'ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI',
 	};
 
-	for (const ep of uniqueEndpoints) {
-		for (const candidateBody of bodies) {
-			try {
-				const res = await fetch(`${ep}/v1internal:fetchAvailableModels`, {
-					method: 'POST',
-					headers,
-					body: JSON.stringify(candidateBody),
-				});
-				if (!res.ok) continue;
-				const data = await res.json();
-				const matched = findDynamicModel(data, requestedRuntimeModel);
-				if (matched) return matched;
-			} catch (error) {
-				// Fail-silent for individual body/endpoint attempts
-			}
+	for (const candidateBody of bodies) {
+		try {
+			const res = await fetchWithEndpointFallback(':fetchAvailableModels', {
+				method: 'POST',
+				headers,
+				body: JSON.stringify(candidateBody),
+			});
+			if (!res.ok) continue;
+			const data = await res.json();
+			const matched = findDynamicModel(data, requestedRuntimeModel);
+			if (matched) return matched;
+		} catch (error) {
+			// Fail-silent for individual body/endpoint attempts
 		}
 	}
 	return undefined;
