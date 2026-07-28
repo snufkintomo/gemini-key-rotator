@@ -45,6 +45,8 @@ agents/
 agent-teams/
 tasks/
 data/
+.scratch/
+CONTEXT.md
 
 # Specific Documentations
 HANDOFF.md
