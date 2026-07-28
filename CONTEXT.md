@@ -9,6 +9,8 @@ This document defines the domain terms, deep module boundaries, and architectura
 - **ContextOptimizer**: A deep payload processing module that compresses prompt context (git diffs, ANSI escape codes, expired tool calls) and estimates token usage before sending requests upstream.
 - **KeyPool**: A unified credential management module encapsulating standard API keys, Google OAuth tokens, and Antigravity tokens, tracking health state, backoff timers, and atomic rotation indices.
 - **TelemetrySink**: A non-blocking telemetry and logging module that sanitizes sensitive credentials, aggregates in-memory usage metrics, and flushes log batches asynchronously to Cloudflare D1.
+- **AdminController**: A deep module handling Admin Console HTTP endpoints, AES-GCM encrypted session cookie management, credentials CRUD operations, and D1 database queries away from the edge fetch router.
+- **CompanionClient**: A deep client module encapsulating Google Cloud Code Companion API communications, authorization header generation, project ID auto-discovery, and multi-endpoint fallback retries.
 
 ## Architectural Vocabulary (Codebase Design)
 
@@ -16,6 +18,6 @@ This document defines the domain terms, deep module boundaries, and architectura
 - **Interface**: The minimum surface area exposed by a module to its callers.
 - **Depth**: The ratio of internal work/complexity to interface complexity. A deep module provides high value behind a simple interface.
 - **Seam**: A point of isolation where behavior can be swapped, mocked, or extended without altering callers.
-- **Adapter**: A translation layer bridging two distinct interfaces or protocols.
+- **Adapter**: An explicit translation layer bridging two distinct interfaces or protocols.
 - **Leverage**: The amount of functionality gained per line of interface code.
 - **Locality**: Keeping related code and logic together so that changes do not require bouncing across multiple files.

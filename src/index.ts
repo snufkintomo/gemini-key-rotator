@@ -9,6 +9,7 @@ import { generatePKCE, getDerivedKey, verifyLogin } from './utils/session';
 import { logRequest, logResponse, writeCombinedLog } from './utils/logger';
 import { discoverProjectId } from './utils/oauth';
 import { ANTIGRAVITY_CLIENT_ID, ANTIGRAVITY_CLIENT_SECRET } from './utils/antigravity';
+import { AdminController } from './utils/admin-controller';
 
 // --- Types ---
 export interface Env {
@@ -94,6 +95,9 @@ export default {
     ctx: any
   ): Promise<Response> {
     const requestUrl = new URL(request.url);
+
+    const adminResponse = await AdminController.handleRequest(request, env);
+    if (adminResponse) return adminResponse;
 
     // --- Public Route: Retrieve Generated Images (No login required) ---
     if (requestUrl.pathname === '/api/images/retrieve') {
