@@ -176,19 +176,20 @@ export class TelemetrySink {
 		if (db && typeof db.prepare === 'function') {
 			try {
 				const stmt = db.prepare(
-					'INSERT INTO api_logs (user_access_token, request_path, method, status, duration_ms, prompt_tokens, completion_tokens, cached_tokens, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+					'INSERT INTO api_logs (timestamp, access_token, request_method, request_url, request_headers, request_body, response_status, response_headers, response_body, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
 				);
 				const batch = eventsToFlush.map((evt) =>
 					stmt.bind(
-						evt.userToken || 'anonymous',
-						evt.requestPath || '/v1/chat/completions',
+						new Date(evt.timestamp || Date.now()).toISOString(),
+						evt.userToken || null,
 						evt.method || 'POST',
+						evt.requestPath || '/v1/chat/completions',
+						JSON.stringify(evt.requestHeaders || {}),
+						evt.requestBody || '',
 						evt.responseStatus || 200,
-						evt.durationMs || 0,
-						evt.promptTokens || 0,
-						evt.completionTokens || 0,
-						evt.cachedTokens || 0,
-						Math.floor((evt.timestamp || Date.now()) / 1000)
+						JSON.stringify(evt.responseHeaders || {}),
+						evt.responseBody || '',
+						evt.durationMs || 0
 					)
 				);
 				if (typeof db.batch === 'function') {

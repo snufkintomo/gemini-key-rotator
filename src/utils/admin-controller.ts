@@ -85,7 +85,7 @@ export class AdminController {
 				if (!env.DB) return jsonResponse({ error: 'Database binding missing' }, 500);
 				try {
 					const limit = parseInt(requestUrl.searchParams.get('limit') || '50', 10);
-					const rows = await env.DB.prepare('SELECT * FROM api_logs ORDER BY created_at DESC LIMIT ?').bind(limit).all();
+					const rows = await env.DB.prepare('SELECT * FROM api_logs ORDER BY timestamp DESC LIMIT ?').bind(limit).all();
 					return jsonResponse({ logs: rows.results || [] });
 				} catch (e: any) {
 					return jsonResponse({ error: e.message }, 500);
