@@ -58,7 +58,7 @@ export class AdminController {
 				return jsonResponse({ error: 'Unauthorized session' }, 401);
 			}
 
-			if (pathname === '/admin/api/stats' || pathname === '/api/statistics') {
+			if (pathname === '/admin/api/stats') {
 				if (!env.DB) return jsonResponse({ error: 'Database binding missing' }, 500);
 				try {
 					const totalLogs = await env.DB.prepare('SELECT COUNT(*) as count FROM api_logs').first('count');
@@ -66,6 +66,16 @@ export class AdminController {
 					return jsonResponse({ totalLogs, totalKeys, timestamp: Date.now() });
 				} catch (e: any) {
 					return jsonResponse({ error: e.message }, 500);
+				}
+			}
+
+			if (pathname === '/api/statistics') {
+				if (!env.DB) return jsonResponse([], 200);
+				try {
+					const rows = await env.DB.prepare('SELECT * FROM api_key_usage ORDER BY usage_date DESC, request_count DESC').all();
+					return jsonResponse(rows.results || []);
+				} catch (e: any) {
+					return jsonResponse([], 200);
 				}
 			}
 
