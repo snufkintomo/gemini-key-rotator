@@ -1,6 +1,6 @@
 /**
  * Deep Module: AdminController
- * Encapsulates Admin Console HTTP endpoints, session cookie authentication,
+ * Encapsulates Admin Console HTTP endpoints (/admin/*), session cookie authentication,
  * and Cloudflare D1 database CRUD operations.
  */
 
@@ -28,14 +28,14 @@ export class AdminController {
 	}
 
 	/**
-	 * Main entrypoint for handling /admin/* and /api/* admin endpoints.
+	 * Main entrypoint for handling /admin/* requests.
 	 * Returns Response if handled, or null if not an admin path.
 	 */
 	static async handleRequest(request: Request, env: any): Promise<Response | null> {
 		const requestUrl = new URL(request.url);
 		const pathname = requestUrl.pathname;
 
-		if (!pathname.startsWith('/admin') && !pathname.startsWith('/api/credentials') && !pathname.startsWith('/api/logs') && !pathname.startsWith('/api/statistics')) {
+		if (!pathname.startsWith('/admin')) {
 			return null;
 		}
 
@@ -51,8 +51,8 @@ export class AdminController {
 			});
 		}
 
-		// Verify Session for Protected Admin API routes
-		if (pathname.startsWith('/admin/api') || pathname.startsWith('/api/')) {
+		// Verify Session for Protected Admin API routes (/admin/api/*)
+		if (pathname.startsWith('/admin/api')) {
 			const session = await this.verifySession(request, env);
 			if (!session.valid) {
 				return jsonResponse({ error: 'Unauthorized session' }, 401);
@@ -69,17 +69,7 @@ export class AdminController {
 				}
 			}
 
-			if (pathname === '/api/statistics') {
-				if (!env.DB) return jsonResponse([], 200);
-				try {
-					const rows = await env.DB.prepare('SELECT * FROM api_key_usage ORDER BY usage_date DESC, request_count DESC').all();
-					return jsonResponse(rows.results || []);
-				} catch (e: any) {
-					return jsonResponse([], 200);
-				}
-			}
-
-			if (pathname === '/admin/api/keys' || pathname === '/api/credentials') {
+			if (pathname === '/admin/api/keys') {
 				if (!env.DB) return jsonResponse({ error: 'Database binding missing' }, 500);
 				try {
 					if (request.method === 'GET') {
@@ -91,7 +81,7 @@ export class AdminController {
 				}
 			}
 
-			if (pathname === '/admin/api/logs' || pathname === '/api/logs') {
+			if (pathname === '/admin/api/logs') {
 				if (!env.DB) return jsonResponse({ error: 'Database binding missing' }, 500);
 				try {
 					const limit = parseInt(requestUrl.searchParams.get('limit') || '50', 10);
