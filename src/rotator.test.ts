@@ -30,6 +30,8 @@ describe('KeyRotator Index Management', () => {
             CLOUDFLARE_AI_GATEWAY_ID: 'test-id',
             CLOUDFLARE_AI_GATEWAY_NAME: 'test-gateway',
         };
+
+        globalThis.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ candidates: [] }), { status: 200 }));
     });
 
     it('should rotate keys sequentially across multiple requests using DO storage', async () => {

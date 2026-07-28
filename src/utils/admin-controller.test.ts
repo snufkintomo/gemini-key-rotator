@@ -1,7 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { AdminController } from './admin-controller';
 
-describe('AdminController', () => {
+describe('AdminController Endpoint Contracts', () => {
 	it('should return null for non-admin request paths', async () => {
 		const req = new Request('https://proxy/v1/chat/completions');
 		const res = await AdminController.handleRequest(req, {});
@@ -22,5 +22,42 @@ describe('AdminController', () => {
 		const res = await AdminController.handleRequest(req, {});
 		expect(res?.status).toBe(302);
 		expect(res?.headers.get('Set-Cookie')).toContain('Max-Age=0');
+	});
+
+	it('contract: /api/statistics MUST return an Array payload for the frontend UI', async () => {
+		// Mock valid session
+		vi.spyOn(AdminController, 'verifySession').mockResolvedValue({ valid: true });
+
+		const mockDb = {
+			prepare: vi.fn().mockReturnValue({
+				all: vi.fn().mockResolvedValue({ results: [{ usage_date: '2025-03-09', request_count: 10 }] })
+			})
+		};
+
+		const req = new Request('https://proxy/api/statistics');
+		const res = await AdminController.handleRequest(req, { DB: mockDb });
+		expect(res?.status).toBe(200);
+
+		const data = await res?.json<any>();
+		expect(Array.isArray(data)).toBe(true); // Guarantees array shape contract for frontend
+	});
+
+	it('contract: /admin/api/stats MUST return summary object payload', async () => {
+		vi.spyOn(AdminController, 'verifySession').mockResolvedValue({ valid: true });
+
+		const mockDb = {
+			prepare: vi.fn().mockReturnValue({
+				first: vi.fn().mockResolvedValue(5)
+			})
+		};
+
+		const req = new Request('https://proxy/admin/api/stats');
+		const res = await AdminController.handleRequest(req, { DB: mockDb });
+		expect(res?.status).toBe(200);
+
+		const data = await res?.json<any>();
+		expect(typeof data).toBe('object');
+		expect(Array.isArray(data)).toBe(false);
+		expect(data).toHaveProperty('totalLogs');
 	});
 });
