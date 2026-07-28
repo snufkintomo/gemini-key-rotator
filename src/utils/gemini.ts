@@ -173,14 +173,16 @@ export async function handleGeminiCli(
 						// Wait 1.5 seconds for Google Cloud API enablement to propagate
 						await new Promise((resolve) => setTimeout(resolve, 1500));
 						// Retry the request once
-						response = await proxyRequest(
-							new Request(url, {
+						response = await fetchWithEndpointFallback(
+							pathAndQuery,
+							{
 								method: 'POST',
 								headers: companionHeaders,
 								body: JSON.stringify(wrappedBody),
-							} as any),
-							isStreaming,
-							accessToken
+							},
+							{
+								fetchFn: (targetUrl, reqInit) => proxyRequest(new Request(targetUrl, reqInit as any), isStreaming, accessToken),
+							}
 						);
 					}
 				}

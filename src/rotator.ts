@@ -16,6 +16,10 @@ import { sendInvalidTokenEmail, sendExhaustedEmail } from './utils/email';
 import { getOAuthAccessToken, parseOAuthCredentials, discoverProjectId, saveDiscoveredProjectId, fetchAvailableModelsForToken, fetchWithEndpointFallback } from './utils/oauth';
 import { parseAntigravityCredentials, getAntigravityHeaders, handleAntigravityCli } from './utils/antigravity';
 import { writeCombinedLog } from './utils/logger';
+import { ContextOptimizer } from './utils/context-optimizer';
+import { TelemetrySink } from './utils/telemetry-sink';
+import { KeyPool } from './utils/key-pool';
+import { getProtocolAdapter } from './utils/protocol-adapter';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -39,6 +43,8 @@ export interface Env {
 export class KeyRotator {
 	ctx: SystemContext;
 	storage: StorageHelper;
+	keyPool: KeyPool;
+	telemetrySink: TelemetrySink;
 	requestCountSinceSync = 0;
 	lastCleanupTime = 0;
 
@@ -108,6 +114,8 @@ export class KeyRotator {
 	constructor(state: DurableObjectState, env: Env) {
 		this.ctx = new SystemContext(state, env);
 		this.storage = new StorageHelper(state.storage);
+		this.keyPool = new KeyPool(state.storage);
+		this.telemetrySink = new TelemetrySink();
 		this.initDatabase();
 	}
 
@@ -234,165 +242,19 @@ export class KeyRotator {
 	}
 
 	estimateGeminiTokens(contents: any[]): number {
-		let chars = 0;
-		if (!contents || !Array.isArray(contents)) return 0;
-		for (const turn of contents) {
-			if (turn && Array.isArray(turn.parts)) {
-				for (const part of turn.parts) {
-					if (part.text) {
-						chars += part.text.length;
-					} else if (part.functionCall) {
-						chars += JSON.stringify(part.functionCall).length;
-					} else if (part.functionResponse) {
-						chars += JSON.stringify(part.functionResponse).length;
-					}
-				}
-			}
-		}
-		return Math.ceil(chars / 4); // 4 chars per token average
+		return ContextOptimizer.estimateTokens(contents);
 	}
 
 	compactGitDiff(text: string): string {
-		if (!text || typeof text !== "string") return text;
-		if (!text.includes("diff --git")) return text;
-
-		const lines = text.split("\n");
-		const outputLines: string[] = [];
-		let inDiff = false;
-		let diffBuffer: string[] = [];
-
-		const processDiffBuffer = (buf: string[]) => {
-			if (buf.length === 0) return [];
-			const processed: string[] = [];
-			let chunkLines: string[] = [];
-
-			const flushChunk = (linesInChunk: string[]) => {
-				if (linesInChunk.length === 0) return;
-				const isModified = linesInChunk.map(
-					(line) => line.startsWith("+") || line.startsWith("-")
-				);
-
-				const keep = new Array(linesInChunk.length).fill(false);
-				for (let i = 0; i < linesInChunk.length; i++) {
-					if (isModified[i]) {
-						for (
-							let k = Math.max(0, i - 6);
-							k <= Math.min(linesInChunk.length - 1, i + 6);
-							k++
-						) {
-							keep[k] = true;
-						}
-					}
-				}
-
-				for (let i = 0; i < linesInChunk.length; i++) {
-					const line = linesInChunk[i];
-					if (
-						line.startsWith("@@") ||
-						line.startsWith("diff --git") ||
-						line.startsWith("index ") ||
-						line.startsWith("---") ||
-						line.startsWith("+++")
-					) {
-						keep[i] = true;
-					}
-				}
-
-				let foldedCount = 0;
-				for (let i = 0; i < linesInChunk.length; i++) {
-					if (keep[i]) {
-						if (foldedCount > 0) {
-							processed.push(
-								`... [${foldedCount} lines of unchanged context folded to save tokens] ...`
-							);
-							foldedCount = 0;
-						}
-						processed.push(linesInChunk[i]);
-					} else {
-						foldedCount++;
-					}
-				}
-				if (foldedCount > 0) {
-					processed.push(
-						`... [${foldedCount} lines of unchanged context folded to save tokens] ...`
-					);
-				}
-			};
-
-			for (const line of buf) {
-				if (line.startsWith("@@")) {
-					flushChunk(chunkLines);
-					chunkLines = [line];
-				} else if (line.startsWith("diff --git")) {
-					flushChunk(chunkLines);
-					chunkLines = [line];
-				} else {
-					chunkLines.push(line);
-				}
-			}
-			flushChunk(chunkLines);
-			return processed;
-		};
-
-		for (const line of lines) {
-			if (line.startsWith("diff --git")) {
-				if (inDiff) {
-					outputLines.push(...processDiffBuffer(diffBuffer));
-					diffBuffer = [];
-				}
-				inDiff = true;
-				diffBuffer.push(line);
-			} else if (inDiff) {
-				diffBuffer.push(line);
-			} else {
-				outputLines.push(line);
-			}
-		}
-		if (inDiff) {
-			outputLines.push(...processDiffBuffer(diffBuffer));
-		}
-
-		return outputLines.join("\n");
+		return ContextOptimizer.compactGitDiff(text);
 	}
 
 	stripAnsi(text: string): string {
-		if (!text || typeof text !== "string") return text;
-		return text.replace(/[\u001b\x1b]\[[0-9;]*[a-zA-Z]/g, "");
+		return ContextOptimizer.stripAnsi(text);
 	}
 
 	compactPart(part: any): any {
-		if (!part) return part;
-		let updated = { ...part };
-		if (updated.text && typeof updated.text === "string") {
-			updated.text = this.stripAnsi(updated.text);
-			updated.text = this.compactGitDiff(updated.text);
-		}
-		if (updated.functionResponse && updated.functionResponse.response) {
-			const res = updated.functionResponse.response;
-			if (typeof res === "object") {
-				let updatedRes = { ...res };
-				if (updatedRes.stdout && typeof updatedRes.stdout === "string") {
-					updatedRes.stdout = this.stripAnsi(updatedRes.stdout);
-					updatedRes.stdout = this.compactGitDiff(updatedRes.stdout);
-				}
-				if (updatedRes.output && typeof updatedRes.output === "string") {
-					updatedRes.output = this.stripAnsi(updatedRes.output);
-					updatedRes.output = this.compactGitDiff(updatedRes.output);
-				}
-				if (updatedRes.response && typeof updatedRes.response === "string") {
-					updatedRes.response = this.stripAnsi(updatedRes.response);
-					updatedRes.response = this.compactGitDiff(updatedRes.response);
-				}
-				updated = {
-					...updated,
-					functionResponse: {
-						...updated.functionResponse,
-						response: updatedRes
-					}
-				};
-			}
-		}
-		return updated;
+		return ContextOptimizer.compactPart(part);
 	}
 
 	pruneGeminiContents(contents: any[]): {
@@ -407,333 +269,12 @@ export class KeyRotator {
 			errorsTombstoned: number;
 		};
 	} {
-		if (!contents || !Array.isArray(contents) || contents.length === 0) {
-			return {
-				prunedContents: contents,
-				stats: { originalParts: 0, finalParts: 0, expiredRemoved: 0, duplicatesRemoved: 0, restoredCount: 0, savedTokens: 0, errorsTombstoned: 0 }
-			};
-		}
-
-		const originalTokens = this.estimateGeminiTokens(contents);
-
-		let originalPartsCount = 0;
-		for (const turn of contents) {
-			if (turn && Array.isArray(turn.parts)) {
-				originalPartsCount += turn.parts.length;
-			}
-		}
-
-		// Set to keep track of turnIndex:partIndex marked for removal
-		const removedParts = new Set<string>();
-
-		// Let's identify functionCall / functionResponse pairs (Pass 1)
-		interface ToolCallPair {
-			callTurnIdx: number;
-			callPartIdx: number;
-			resTurnIdx: number;
-			resPartIdx: number;
-			name: string;
-			args: any;
-			resourceKey: string;
-		}
-		const pairs: ToolCallPair[] = [];
-
-		for (let i = 0; i < contents.length; i++) {
-			const turn = contents[i];
-			if (!turn || !Array.isArray(turn.parts)) continue;
-
-			for (let j = 0; j < turn.parts.length; j++) {
-				const part = turn.parts[j];
-				if (part && part.functionCall) {
-					const name = part.functionCall.name;
-					const args = part.functionCall.args || {};
-
-					// Look for matching response in subsequent turns
-					let matchFound = false;
-					for (let k = i + 1; k < contents.length; k++) {
-						const resTurn = contents[k];
-						if (!resTurn || !Array.isArray(resTurn.parts)) continue;
-
-						for (let l = 0; l < resTurn.parts.length; l++) {
-							const resPart = resTurn.parts[l];
-							if (resPart && resPart.functionResponse && resPart.functionResponse.name === name) {
-								// Found pair!
-								let resourceKey = name;
-								const keyProp = args.path || args.filename || args.command || args.query || args.id;
-								if (keyProp) {
-									resourceKey = `${name}::${keyProp}`;
-								} else {
-									resourceKey = `${name}::${JSON.stringify(args)}`;
-								}
-
-								pairs.push({
-									callTurnIdx: i,
-									callPartIdx: j,
-									resTurnIdx: k,
-									resPartIdx: l,
-									name,
-									args,
-									resourceKey
-								});
-								matchFound = true;
-								break;
-							}
-						}
-						if (matchFound) break;
-					}
-				}
-			}
-		}
-
-		// Pass 1: Expired Context Elimination
-		// Map resourceKey -> latest pair index in the pairs list
-		const latestPairIdx = new Map<string, number>();
-		for (let i = 0; i < pairs.length; i++) {
-			latestPairIdx.set(pairs[i].resourceKey, i);
-		}
-
-		let expiredRemoved = 0;
-		for (let i = 0; i < pairs.length; i++) {
-			const pair = pairs[i];
-			if (latestPairIdx.get(pair.resourceKey) !== i) {
-				// This is an older, expired pair! Mark for removal
-				removedParts.add(`${pair.callTurnIdx}:${pair.callPartIdx}`);
-				removedParts.add(`${pair.resTurnIdx}:${pair.resPartIdx}`);
-				expiredRemoved += 2;
-			}
-		}
-
-		// Pass 2: Duplicate Context Elimination (RAG docs or text duplication)
-		const seenText = new Set<string>();
-		const duplicateParts = new Map<string, string>();
-		let duplicatesRemoved = 0;
-
-		for (let i = 0; i < contents.length; i++) {
-			const turn = contents[i];
-			if (!turn || !Array.isArray(turn.parts)) continue;
-
-			for (let j = 0; j < turn.parts.length; j++) {
-				const part = turn.parts[j];
-				if (part && part.text && typeof part.text === 'string') {
-					// We only collapse larger blocks (e.g., >200 characters)
-					if (part.text.length > 200) {
-						const norm = part.text.toLowerCase().replace(/\s+/g, ' ').trim();
-						if (seenText.has(norm)) {
-							duplicateParts.set(`${i}:${j}`, "[System Pruner: Duplicate text removed. Use 'read' offset/limit to re-inspect if needed.]");
-							duplicatesRemoved++;
-						} else {
-							seenText.add(norm);
-						}
-					}
-				}
-			}
-		}
-
-		// Pass 3: Dependency Restoration
-		// First, compile all text from surviving parts (including duplicates that have tombstone strings)
-		let survivingTextConcat = '';
-		for (let i = 0; i < contents.length; i++) {
-			const turn = contents[i];
-			if (!turn || !Array.isArray(turn.parts)) continue;
-
-			for (let j = 0; j < turn.parts.length; j++) {
-				if (!removedParts.has(`${i}:${j}`)) {
-					const part = turn.parts[j];
-					if (part && part.text) {
-						survivingTextConcat += ' ' + part.text;
-					}
-				}
-			}
-		}
-
-		let restoredCount = 0;
-		// Check expired pairs to see if they are referenced
-		for (const pair of pairs) {
-			const callKey = `${pair.callTurnIdx}:${pair.callPartIdx}`;
-			if (removedParts.has(callKey)) {
-				let shouldRestore = false;
-				if (pair.args && typeof pair.args === 'object') {
-					const pathValue = pair.args.path || pair.args.filename;
-					if (pathValue && typeof pathValue === 'string') {
-						const basename = pathValue.split('/').pop() || pathValue;
-						// If user explicitly mentions the path or file name in surviving messages, restore it!
-						if (survivingTextConcat.includes(pathValue) || survivingTextConcat.includes(basename)) {
-							shouldRestore = true;
-						}
-					}
-					// Also restore if command is referenced
-					if (pair.args.command && typeof pair.args.command === 'string') {
-						if (survivingTextConcat.includes(pair.args.command)) {
-							shouldRestore = true;
-						}
-					}
-				}
-
-				if (shouldRestore) {
-					removedParts.delete(`${pair.callTurnIdx}:${pair.callPartIdx}`);
-					removedParts.delete(`${pair.resTurnIdx}:${pair.resPartIdx}`);
-					restoredCount += 2;
-				}
-			}
-		}
-
-		// Pass 4: Error Log Tombstoning (Tombstone old/superseded build & runtime failures)
-		const tombstonedResponses = new Map<string, any>();
-		let errorsTombstoned = 0;
-
-		// 1. Identify which resource keys have a successful tool output later in history
-		const latestSuccessPairIdx = new Map<string, number>();
-		for (let k = 0; k < pairs.length; k++) {
-			const pair = pairs[k];
-			const resPart = contents[pair.resTurnIdx].parts[pair.resPartIdx];
-			if (resPart && resPart.functionResponse) {
-				const responseObj = resPart.functionResponse.response;
-				const responseStr = JSON.stringify(responseObj || {});
-				
-				let isFailure = false;
-				if (responseObj && (responseObj.error || responseObj.failed || (responseObj.exitCode !== undefined && responseObj.exitCode !== 0))) {
-					isFailure = true;
-				} else {
-					const lowerStr = responseStr.toLowerCase();
-					if (responseStr.length > 300 && (
-						lowerStr.includes("error") || 
-						lowerStr.includes("failed") || 
-						lowerStr.includes("exception") || 
-						lowerStr.includes("npm err!") || 
-						lowerStr.includes("module not found") || 
-						lowerStr.includes("typescript error") || 
-						lowerStr.includes("stderr")
-					)) {
-						isFailure = true;
-					}
-				}
-
-				if (!isFailure) {
-					latestSuccessPairIdx.set(pair.resourceKey, k);
-				}
-			}
-		}
-
-		// 2. Scan pairs for failed executions and apply tombstoning rules
-		for (let k = 0; k < pairs.length; k++) {
-			const pair = pairs[k];
-			const resKey = `${pair.resTurnIdx}:${pair.resPartIdx}`;
-			
-			// If already removed by Pass 1, skip
-			if (removedParts.has(resKey)) continue;
-
-			const resPart = contents[pair.resTurnIdx].parts[pair.resPartIdx];
-			if (resPart && resPart.functionResponse) {
-				const responseObj = resPart.functionResponse.response;
-				const responseStr = JSON.stringify(responseObj || {});
-				
-				let isFailure = false;
-				if (responseObj && (responseObj.error || responseObj.failed || (responseObj.exitCode !== undefined && responseObj.exitCode !== 0))) {
-					isFailure = true;
-				} else {
-					const lowerStr = responseStr.toLowerCase();
-					if (responseStr.length > 300 && (
-						lowerStr.includes("error") || 
-						lowerStr.includes("failed") || 
-						lowerStr.includes("exception") || 
-						lowerStr.includes("npm err!") || 
-						lowerStr.includes("module not found") || 
-						lowerStr.includes("typescript error") || 
-						lowerStr.includes("stderr")
-					)) {
-						isFailure = true;
-					}
-				}
-
-				if (isFailure) {
-					let shouldTombstone = false;
-					
-					// Rule 1: Same-Command Success Detection (100% deterministic, no turn count required!)
-					const successIdx = latestSuccessPairIdx.get(pair.resourceKey);
-					if (successIdx !== undefined && successIdx > k) {
-						shouldTombstone = true;
-					}
-					
-					// Rule 2 & 3: Time-based safety margin (8 turns) AND Token Pressure (>20,000 tokens)
-					if (!shouldTombstone && originalTokens > 20000 && (contents.length - pair.resTurnIdx > 8)) {
-						shouldTombstone = true;
-					}
-
-					if (shouldTombstone) {
-						tombstonedResponses.set(resKey, {
-							output: "[System Pruner: Old build/runtime error log removed. Subsequent run of this command succeeded.]",
-							error: null,
-							failed: false,
-							exitCode: 0
-						});
-						errorsTombstoned++;
-					}
-				}
-			}
-		}
-
-		// Build final pruned contents with merged adjacent roles
-		const prunedContents: any[] = [];
-		for (let i = 0; i < contents.length; i++) {
-			const turn = contents[i];
-			if (!turn || !Array.isArray(turn.parts)) continue;
-
-			const survivingParts: any[] = [];
-			for (let j = 0; j < turn.parts.length; j++) {
-				if (!removedParts.has(`${i}:${j}`)) {
-					let part = turn.parts[j];
-					const key = `${i}:${j}`;
-					if (duplicateParts.has(key)) {
-						part = { ...part, text: duplicateParts.get(key) };
-					} else if (tombstonedResponses.has(key)) {
-						part = {
-							...part,
-							functionResponse: {
-								...part.functionResponse,
-								response: tombstonedResponses.get(key)
-							}
-						};
-					}
-					part = this.compactPart(part);
-					survivingParts.push(part);
-				}
-			}
-
-			if (survivingParts.length > 0) {
-				const role = turn.role || 'user';
-				if (prunedContents.length > 0 && prunedContents[prunedContents.length - 1].role === role) {
-					prunedContents[prunedContents.length - 1].parts.push(...survivingParts);
-				} else {
-					prunedContents.push({
-						role,
-						parts: survivingParts
-					});
-				}
-			}
-		}
-
-		let finalPartsCount = 0;
-		for (const turn of prunedContents) {
-			finalPartsCount += turn.parts.length;
-		}
-
-		const prunedTokens = this.estimateGeminiTokens(prunedContents);
-		const savedTokens = Math.max(0, originalTokens - prunedTokens);
-
+		const res = ContextOptimizer.optimizePayload(contents);
 		return {
-			prunedContents,
-			stats: {
-				originalParts: originalPartsCount,
-				finalParts: finalPartsCount,
-				expiredRemoved: expiredRemoved - restoredCount,
-				duplicatesRemoved,
-				restoredCount,
-				savedTokens,
-				errorsTombstoned
-			}
+			prunedContents: res.prunedContents,
+			stats: res.stats
 		};
 	}
-
 	async getNextApiBaseUrl(isStreaming: boolean, isOAuth = false): Promise<string> {
 		if (!isStreaming && !isOAuth && this.ctx.isCloudflareAIGatewayEnabled) {
 			return `${this.ctx.cloudflareAIGatewayBase}/google-ai-studio`;
@@ -871,7 +412,7 @@ export class KeyRotator {
 
 	async recordUsage(
 		rawKey: string,
-		keyType: 'api_key' | 'oauth',
+		keyType: 'api_key' | 'oauth' | 'antigravity',
 		userToken: string,
 		success: boolean,
 		is429: boolean,
@@ -2824,117 +2365,7 @@ async fetch(request: Request): Promise<Response> {
 }
 
 export async function extractUsageFromResponse(response: Response, mode: string): Promise<{ promptTokens: number, completionTokens: number, cachedTokens: number }> {
-	let promptTokens = 0;
-	let completionTokens = 0;
-	let cachedTokens = 0;
-
-	try {
-		const cloned = response.clone();
-		if (cloned.headers.get('content-type')?.includes('text/event-stream')) {
-			// Read the stream to find usage using high-performance regex on stream chunks
-			const reader = cloned.body?.getReader();
-			if (!reader) return { promptTokens, completionTokens, cachedTokens };
-
-			const decoder = new TextDecoder();
-			let buffer = '';
-			while (true) {
-				const { done, value } = await reader.read();
-				if (done) break;
-				if (value) {
-					buffer += decoder.decode(value, { stream: true });
-				}
-			}
-
-			// 1. Parse Gemini usageMetadata if present
-			const usageMetadataMatch = buffer.match(/"usageMetadata"\s*:\s*\{([^}]+)\}/);
-			if (usageMetadataMatch) {
-				const inner = usageMetadataMatch[1];
-				const promptMatch = inner.match(/"promptTokenCount"\s*:\s*(\d+)/);
-				const candidatesMatch = inner.match(/"candidatesTokenCount"\s*:\s*(\d+)/);
-				const cachedMatch = inner.match(/"cachedContentTokenCount"\s*:\s*(\d+)/);
-				if (promptMatch) promptTokens = parseInt(promptMatch[1], 10);
-				if (candidatesMatch) completionTokens = parseInt(candidatesMatch[1], 10);
-				if (cachedMatch) cachedTokens = parseInt(cachedMatch[1], 10);
-				return { promptTokens, completionTokens, cachedTokens };
-			}
-
-			// 2. Parse Claude / OpenAI (independent tokens parsing to handle split SSE formats like in Claude)
-			const promptTokensMatch = buffer.match(/"(?:input_tokens|prompt_tokens)"\s*:\s*(\d+)/);
-			if (promptTokensMatch) {
-				promptTokens = parseInt(promptTokensMatch[1], 10);
-			}
-
-			// Search for all occurrences of completion/output tokens and take the maximum (bypasses initial 0 output_tokens)
-			const completionRegex = /"(?:output_tokens|completion_tokens)"\s*:\s*(\d+)/g;
-			let match;
-			let maxCompletion = 0;
-			while ((match = completionRegex.exec(buffer)) !== null) {
-				const val = parseInt(match[1], 10);
-				if (val > maxCompletion) {
-					maxCompletion = val;
-				}
-			}
-			completionTokens = maxCompletion;
-
-		} else {
-			const text = await cloned.text();
-			try {
-				const data = JSON.parse(text);
-				if (mode === 'openai') {
-					if (data.usage) {
-						promptTokens = data.usage.prompt_tokens || 0;
-						completionTokens = data.usage.completion_tokens || 0;
-					}
-				} else if (mode === 'claude') {
-					if (data.usage) {
-						promptTokens = data.usage.input_tokens || 0;
-						completionTokens = data.usage.output_tokens || 0;
-					}
-				} else {
-					let usage = null;
-					if (Array.isArray(data)) {
-						const lastElement = data[data.length - 1];
-						usage = lastElement?.usageMetadata || (lastElement?.candidates && lastElement.candidates[0]?.usageMetadata);
-					} else {
-						usage = data.usageMetadata || (data.candidates && data.candidates[0]?.usageMetadata);
-					}
-					if (usage) {
-						promptTokens = usage.promptTokenCount || 0;
-						completionTokens = usage.candidatesTokenCount || 0;
-						cachedTokens = usage.cachedContentTokenCount || 0;
-					}
-				}
-			} catch {
-				// Fallback regex match if JSON parse fails
-				const usageMetadataMatch = text.match(/"usageMetadata"\s*:\s*\{([^}]+)\}/);
-				if (usageMetadataMatch) {
-					const inner = usageMetadataMatch[1];
-					const promptMatch = inner.match(/"promptTokenCount"\s*:\s*(\d+)/);
-					const candidatesMatch = inner.match(/"candidatesTokenCount"\s*:\s*(\d+)/);
-					const cachedMatch = inner.match(/"cachedContentTokenCount"\s*:\s*(\d+)/);
-					if (promptMatch) promptTokens = parseInt(promptMatch[1], 10);
-					if (candidatesMatch) completionTokens = parseInt(candidatesMatch[1], 10);
-					if (cachedMatch) cachedTokens = parseInt(cachedMatch[1], 10);
-				} else {
-					const promptTokensMatch = text.match(/"(?:input_tokens|prompt_tokens)"\s*:\s*(\d+)/);
-					if (promptTokensMatch) promptTokens = parseInt(promptTokensMatch[1], 10);
-
-					const completionRegex = /"(?:output_tokens|completion_tokens)"\s*:\s*(\d+)/g;
-					let match;
-					let maxCompletion = 0;
-					while ((match = completionRegex.exec(text)) !== null) {
-						const val = parseInt(match[1], 10);
-						if (val > maxCompletion) maxCompletion = val;
-					}
-					completionTokens = maxCompletion;
-				}
-			}
-		}
-	} catch (e) {
-		console.error('Error extracting usage from response:', e);
-	}
-
-	return { promptTokens, completionTokens, cachedTokens };
+	return TelemetrySink.extractUsage(response, mode);
 }
 
 async function sha256Hex(plain: string): Promise<string> {

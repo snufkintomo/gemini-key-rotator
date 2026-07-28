@@ -211,7 +211,7 @@ export async function getOAuthAccessToken(
 									for (const row of matchingResults) {
 										const oauth_credentials = row.oauth_credentials as string;
 										const access_token = row.access_token as string;
-										const oauth_key_states = JSON.parse(row.oauth_key_states || '[]') as any[];
+										const oauth_key_states = JSON.parse((row.oauth_key_states as string) || '[]') as any[];
 
 										const parts = oauth_credentials.split(',');
 										const index = parts.findIndex(part => {
@@ -225,7 +225,7 @@ export async function getOAuthAccessToken(
 											}
 
 											const keyState = oauth_key_states[index] || {};
-											const currentExhausted = keyState.exhaustedUntil || {};
+											const currentExhausted = (typeof keyState.exhaustedUntil === 'object' && keyState.exhaustedUntil !== null) ? (keyState.exhaustedUntil as Record<string, number>) : {};
 
 											oauth_key_states[index] = {
 												...keyState,
@@ -253,7 +253,7 @@ export async function getOAuthAccessToken(
 								for (const row of matchingResults) {
 									const oauth_credentials = row.oauth_credentials as string;
 									const access_token = row.access_token as string;
-									const oauth_key_states = JSON.parse(row.oauth_key_states || '[]') as any[];
+									const oauth_key_states = JSON.parse((row.oauth_key_states as string) || '[]') as any[];
 
 									const parts = oauth_credentials.split(',');
 									const index = parts.findIndex(part => {

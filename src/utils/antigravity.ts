@@ -1,4 +1,5 @@
-import { OAuthCredentials, SystemContext } from '../types';
+import { OAuthCredentials } from '../types';
+import { SystemContext } from './context';
 import { getOAuthAccessToken, discoverProjectId, saveDiscoveredProjectId, fetchWithEndpointFallback, CLOUDCODE_ENDPOINTS } from './oauth';
 import { fetchAvailableModelsForToken } from './oauth';
 import { safeLiteCompress, generateUuid } from './gemini';

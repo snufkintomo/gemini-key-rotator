@@ -147,7 +147,7 @@ export function mapModelForInternalApi(model: string): string {
 
 import { KeyState } from '../types';
 
-export function resolveModelWithOAuthSupport(rawModel: string, keyStates: KeyState[]): string {
+export function resolveModelWithOAuthSupport(rawModel: string, keyStates: KeyState[] = []): string {
 	// If at least one active state's availableModels contains rawModel, do NOT map it!
 	const hasNativeSupport = keyStates.some(state => {
 		if (state && Array.isArray(state.availableModels)) {
