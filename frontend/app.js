@@ -1076,7 +1076,7 @@
             }
         }
 
-        async function diagnoseKeyFromStats(token, key, isOAuth, model, button) {
+        async function diagnoseKeyFromStats(token, key, isOAuth, isAntigravity, model, button) {
             if (!token) {
                 showAlert('Diagnosis Failed', 'Missing user access token for this key.', 'error');
                 return;
@@ -1085,9 +1085,11 @@
             const modelsModalContent = document.getElementById('modelsModalContent');
             if (!modelsModal || !modelsModalContent) return;
 
-            const originalText = button.textContent;
-            button.textContent = 'Testing...';
-            button.disabled = true;
+            const originalText = button ? button.textContent : 'Test Key';
+            if (button) {
+                button.textContent = 'Testing...';
+                button.disabled = true;
+            }
 
             const displayModel = model ? model.replace(/^models\//, '') : 'Default Model';
             modelsModalContent.innerHTML = `<div style="color: var(--text-secondary);">Running diagnostics for model <strong>${displayModel}</strong>...</div>`;
@@ -1097,7 +1099,7 @@
                 const response = await fetch('/api/key-diagnose', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ access_token: token, key, isOAuth, model })
+                    body: JSON.stringify({ access_token: token, key, isOAuth, isAntigravity, model })
                 });
                 const data = await response.json();
                 
