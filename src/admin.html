@@ -1848,11 +1848,8 @@
                 const rowStyle = isZeroSuccess ? 'background-color: var(--danger-color-light);' : '';
                 const rateStyle = isZeroSuccess ? 'color: var(--danger-color); font-weight: bold;' : '';
                 
-                const escapeStr = (s) => (s || '').toString().replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+                const enc = (val) => encodeURIComponent((val || '').toString());
                 const rawUserToken = data.token || data.user_access_token || '';
-                const tokenParam = rawUserToken ? `'${escapeStr(rawUserToken)}'` : 'null';
-                const keyParam = `'${escapeStr(data.raw_key)}'`;
-                const modelParam = `'${escapeStr(data.model)}'`;
 
                 const isOAuth = keyType === 'oauth' ? 'true' : 'false';
                 const isAntigravity = keyType === 'antigravity' ? 'true' : 'false';
@@ -1874,7 +1871,7 @@
                             ⚡️ ${formatTokens(data.cachedTokens || 0)} <span style="color: #805ad5; font-size: 0.85rem;">/ ✨ ${formatTokens(data.savedTokens || 0)}</span>
                         </td>
                         <td style="padding: 8px; border: 1px solid var(--border-color); text-align: center;">
-                            <button class="btn-secondary-outline" onclick="diagnoseKeyFromStats(${tokenParam}, ${keyParam}, ${isOAuth}, ${isAntigravity}, ${modelParam}, this)">Test Key</button>
+                            <button class="btn-secondary-outline" onclick="diagnoseKeyFromStatsEncoded('${enc(rawUserToken)}', '${enc(data.raw_key)}', ${isOAuth}, ${isAntigravity}, '${enc(data.model)}', this)">Test Key</button>
                         </td>
                     </tr>
                 `;
@@ -2273,7 +2270,7 @@
             }
         }
 
-        async function diagnoseKeyFromStats(token, key, isOAuth, isAntigravity, model, button) {
+        window.diagnoseKeyFromStats = async function(token, key, isOAuth, isAntigravity, model, button) {
             const selectedToken = document.getElementById('tokenSelect')?.value || '';
             const effectiveToken = (token && token !== 'null' && token !== 'undefined') ? token : selectedToken;
 
@@ -2328,10 +2325,19 @@
             } catch (e) {
                 modelsModalContent.innerHTML = `<div style="color: var(--danger-color); font-weight: bold;">Error:</div><div style="color: var(--text-secondary); margin-top: 4px;">${e.message}</div>`;
             } finally {
-                button.textContent = originalText;
-                button.disabled = false;
+                if (button) {
+                    button.textContent = originalText;
+                    button.disabled = false;
+                }
             }
-        }
+        };
+
+        window.diagnoseKeyFromStatsEncoded = function(encToken, encKey, isOAuth, isAntigravity, encModel, button) {
+            const token = decodeURIComponent(encToken || '');
+            const key = decodeURIComponent(encKey || '');
+            const model = decodeURIComponent(encModel || '');
+            return window.diagnoseKeyFromStats(token, key, isOAuth, isAntigravity, model, button);
+        };
 
         async function updateKeyHealth(token, type) {
             const isOAuth = type === 'oauth' || type === true;
