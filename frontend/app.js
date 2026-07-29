@@ -653,9 +653,11 @@
                 const rowStyle = isZeroSuccess ? 'background-color: var(--danger-color-light);' : '';
                 const rateStyle = isZeroSuccess ? 'color: var(--danger-color); font-weight: bold;' : '';
                 
-                const tokenParam = data.token ? `'${data.token}'` : 'null';
-                const keyParam = `'${data.raw_key}'`;
-                const modelParam = `'${data.model}'`;
+                const escapeStr = (s) => (s || '').toString().replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+                const rawUserToken = data.token || data.user_access_token || '';
+                const tokenParam = rawUserToken ? `'${escapeStr(rawUserToken)}'` : 'null';
+                const keyParam = `'${escapeStr(data.raw_key)}'`;
+                const modelParam = `'${escapeStr(data.model)}'`;
 
                 const isOAuth = keyType === 'oauth' ? 'true' : 'false';
                 const isAntigravity = keyType === 'antigravity' ? 'true' : 'false';
@@ -1077,12 +1079,16 @@
         }
 
         async function diagnoseKeyFromStats(token, key, isOAuth, isAntigravity, model, button) {
-            if (!token) {
-                showAlert('Diagnosis Failed', 'Missing user access token for this key.', 'error');
-                return;
-            }
+            const selectedToken = document.getElementById('tokenSelect')?.value || '';
+            const effectiveToken = (token && token !== 'null' && token !== 'undefined') ? token : selectedToken;
+
             const modelsModal = document.getElementById('modelsModal');
             const modelsModalContent = document.getElementById('modelsModalContent');
+
+            if (!effectiveToken) {
+                showAlert('Diagnosis Failed', 'Missing user access token for this key. Please select a token from the dropdown.', 'error');
+                return;
+            }
             if (!modelsModal || !modelsModalContent) return;
 
             const originalText = button ? button.textContent : 'Test Key';
@@ -1099,7 +1105,7 @@
                 const response = await fetch('/api/key-diagnose', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ access_token: token, key, isOAuth, isAntigravity, model })
+                    body: JSON.stringify({ access_token: effectiveToken, key, isOAuth, isAntigravity, model })
                 });
                 const data = await response.json();
                 
