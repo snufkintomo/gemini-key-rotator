@@ -107,7 +107,15 @@ export async function transformOpenAIMsgToGeminiParts(message: any) {
 					name: tool_call.function.name,
 					args: JSON.parse(tool_call.function.arguments),
 				};
-				// We do not pass thought_signature to Google Gemini's standard API as it results in a 400 Bad Request
+				// Extract thought_signature if present in property or encoded in tool_call.id
+				let signature: string | undefined =
+					tool_call.thought_signature || tool_call.thoughtSignature || tool_call.function?.thought_signature;
+				if (!signature && tool_call.id && tool_call.id.includes('_TSIG_')) {
+					const idParts = tool_call.id.split('_TSIG_');
+					signature = idParts[1];
+				}
+				// Gemini 3.1 Pro / 2.5 Pro Thinking models strictly require thought_signature on functionCall parts
+				functionCall.thought_signature = signature || 'skip';
 				parts.push({ functionCall });
 			}
 		}

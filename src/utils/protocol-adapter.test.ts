@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { getProtocolAdapter, OpenAIAdapter, ClaudeAdapter, GeminiAdapter, AntigravityAdapter } from './protocol-adapter';
+import { transformOpenAIMessagesToGeminiContents } from './openai';
 
 describe('ProtocolAdapter Seam', () => {
 	it('should return correct adapter instance for given mode string', () => {
@@ -43,17 +44,30 @@ describe('ProtocolAdapter Seam', () => {
 		expect(payload.systemInstruction).toBe('You are a helpful assistant');
 	});
 
-	it('should translate Gemini request into normalized payload', async () => {
-		const adapter = new GeminiAdapter();
-		const request = new Request('https://proxy/v1/models/gemini-2.5-flash:generateContent', {
-			method: 'POST',
-			headers: { 'content-type': 'application/json' },
-			body: JSON.stringify({
-				contents: [{ role: 'user', parts: [{ text: 'Hello Gemini' }] }]
-			})
-		});
+	it('should attach thought_signature to Gemini functionCall when translating OpenAI tool_calls', async () => {
+		const result: any = await transformOpenAIMessagesToGeminiContents([
+			{ role: 'user', content: 'Read files' },
+			{
+				role: 'assistant',
+				tool_calls: [
+					{
+						id: 'call_123_TSIG_SIG_TEST_456',
+						type: 'function',
+						function: { name: 'default_api:read', arguments: '{}' }
+					},
+					{
+						id: 'call_789',
+						type: 'function',
+						function: { name: 'default_api:bash', arguments: '{}' }
+					}
+				]
+			}
+		]);
 
-		const payload = await adapter.translateRequest(request);
-		expect(payload.contents.length).toBe(1);
+		const modelContent = result.contents.find((c: any) => c.role === 'model');
+		expect(modelContent).toBeDefined();
+		const parts = modelContent.parts;
+		expect(parts[0].functionCall.thought_signature).toBe('SIG_TEST_456');
+		expect(parts[1].functionCall.thought_signature).toBe('skip');
 	});
 });

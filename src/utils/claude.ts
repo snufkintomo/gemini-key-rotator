@@ -68,10 +68,16 @@ export async function transformClaudeMessagesToGeminiContents(messages: ClaudeMe
 							}
 							break;
 						case 'tool_use':
+							let signature = (part as any).thought_signature || (part as any).thoughtSignature || (part as any).signature || currentSignature;
+							if (!signature && part.id && part.id.includes('_TSIG_')) {
+								const idParts = part.id.split('_TSIG_');
+								signature = idParts[1];
+							}
 							parts.push({
 								functionCall: {
 									name: part.name || part.input?.name,
 									args: part.input,
+									thought_signature: signature || 'skip',
 								},
 							});
 							break;
