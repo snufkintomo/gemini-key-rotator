@@ -1079,14 +1079,10 @@
             const selectedToken = document.getElementById('tokenSelect')?.value || '';
             const effectiveToken = (token && token !== 'null' && token !== 'undefined') ? token : selectedToken;
 
-            const modelsModal = document.getElementById('modelsModal');
-            const modelsModalContent = document.getElementById('modelsModalContent');
-
             if (!effectiveToken) {
                 showAlert('Diagnosis Failed', 'Missing user access token for this key. Please select a token from the dropdown.', 'error');
                 return;
             }
-            if (!modelsModal || !modelsModalContent) return;
 
             const originalText = button ? button.textContent : 'Test Key';
             if (button) {
@@ -1095,8 +1091,7 @@
             }
 
             const displayModel = model ? model.replace(/^models\//, '') : 'Default Model';
-            modelsModalContent.innerHTML = `<div style="color: var(--text-secondary);">Running diagnostics for model <strong>${displayModel}</strong>...</div>`;
-            modelsModal.style.display = 'flex';
+            showSystemModal('Key Diagnostics', `<div style="color: var(--text-secondary);">Running diagnostics for model <strong>${displayModel}</strong>...</div>`);
             
             try {
                 const response = await fetch('/api/key-diagnose', {
@@ -1120,15 +1115,16 @@
                                     <span style="color: var(--text-primary);">"${data.greeting}"</span>
                                  </div>`;
                     }
-                    modelsModalContent.innerHTML = html;
+                    showSystemModal('Key Diagnostics', html);
                 } else {
-                    modelsModalContent.innerHTML = `<div style="color: var(--danger-color); font-weight: bold;">Diagnosis Failed!</div>
-                                                   <div style="color: var(--text-secondary); margin-top: 4px;">Model Tested: <strong>${displayModel}</strong></div>
-                                                   <div style="color: var(--text-secondary); margin-top: 4px;">Status: ${data.status || 'Error'}</div>
-                                                   <div style="color: var(--text-secondary); margin-top: 4px;">Details: ${data.error || 'Connection failed'}</div>`;
+                    const html = `<div style="color: var(--danger-color); font-weight: bold;">Diagnosis Failed!</div>
+                                  <div style="color: var(--text-secondary); margin-top: 4px;">Model Tested: <strong>${displayModel}</strong></div>
+                                  <div style="color: var(--text-secondary); margin-top: 4px;">Status: ${data.status || 'Error'}</div>
+                                  <div style="color: var(--text-secondary); margin-top: 4px;">Details: ${data.error || 'Connection failed'}</div>`;
+                    showSystemModal('Diagnosis Failed', html);
                 }
             } catch (e) {
-                modelsModalContent.innerHTML = `<div style="color: var(--danger-color); font-weight: bold;">Error:</div><div style="color: var(--text-secondary); margin-top: 4px;">${e.message}</div>`;
+                showSystemModal('Diagnosis Failed', `<div style="color: var(--danger-color); font-weight: bold;">Error:</div><div style="color: var(--text-secondary); margin-top: 4px;">${e.message}</div>`);
             } finally {
                 if (button) {
                     button.textContent = originalText;
