@@ -1613,39 +1613,47 @@
 
             const ctxTok = document.getElementById('tokensChart').getContext('2d');
             tokensChart = new Chart(ctxTok, {
-                type: 'bar',
+                type: 'line',
                 data: {
                     labels: labels,
                     datasets: [
                         {
                             label: 'Prompt Tokens',
                             data: promptTokens,
-                            backgroundColor: '#805ad5'
+                            borderColor: '#805ad5',
+                            backgroundColor: 'rgba(128, 90, 213, 0.1)',
+                            fill: true,
+                            tension: 0.3
                         },
                         {
                             label: 'Completion Tokens',
                             data: completionTokens,
-                            backgroundColor: '#319795'
+                            borderColor: '#319795',
+                            backgroundColor: 'transparent',
+                            tension: 0.3
                         },
                         {
                             label: 'Cached Tokens ⚡️',
                             data: cachedTokens,
-                            backgroundColor: '#38a169'
+                            borderColor: '#38a169',
+                            backgroundColor: 'transparent',
+                            tension: 0.3
                         },
                         {
                             label: 'Saved Tokens ✨',
                             data: savedTokens,
-                            backgroundColor: '#dd6b20'
+                            borderColor: '#dd6b20',
+                            backgroundColor: 'transparent',
+                            tension: 0.3
                         }
                     ]
                 },
                 options: {
                     responsive: true,
                     plugins: {
-                        title: { display: true, text: 'Token Usage & Cache Savings (30 Days)' }
+                        title: { display: true, text: 'Token Consumption & Cache Savings (30 Days)' }
                     },
                     scales: {
-                        x: { stacked: false },
                         y: { beginAtZero: true }
                     }
                 }
