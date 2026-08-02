@@ -913,7 +913,11 @@ export default {
                     usage_date, 
                     SUM(request_count) as total_requests, 
                     SUM(success_count) as total_success, 
-                    SUM(error_429_count) as total_429
+                    SUM(error_429_count) as total_429,
+                    SUM(prompt_tokens) as total_prompt_tokens,
+                    SUM(completion_tokens) as total_completion_tokens,
+                    SUM(cached_tokens) as total_cached_tokens,
+                    SUM(saved_tokens) as total_saved_tokens
                   FROM api_key_usage 
                   GROUP BY usage_date 
                   ORDER BY usage_date DESC
@@ -925,7 +929,11 @@ export default {
                     u.usage_date, 
                     SUM(u.request_count) as total_requests, 
                     SUM(u.success_count) as total_success, 
-                    SUM(u.error_429_count) as total_429
+                    SUM(u.error_429_count) as total_429,
+                    SUM(u.prompt_tokens) as total_prompt_tokens,
+                    SUM(u.completion_tokens) as total_completion_tokens,
+                    SUM(u.cached_tokens) as total_cached_tokens,
+                    SUM(u.saved_tokens) as total_saved_tokens
                   FROM api_key_usage u
                   JOIN api_credentials c ON u.user_access_token = c.access_token
                   WHERE c.owner_admin_id = ?

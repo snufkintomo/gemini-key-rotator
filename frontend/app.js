@@ -324,6 +324,7 @@
         // Trends Handling
         let requestsChart = null;
         let errorsChart = null;
+        let tokensChart = null;
 
         async function loadTrends() {
             try {
@@ -400,6 +401,52 @@
                         title: { display: true, text: 'Rate Limit Errors (429)' }
                     },
                     scales: {
+                        y: { beginAtZero: true }
+                    }
+                }
+            });
+
+            if (tokensChart) tokensChart.destroy();
+            const promptTokens = data.map(d => d.total_prompt_tokens || 0);
+            const completionTokens = data.map(d => d.total_completion_tokens || 0);
+            const cachedTokens = data.map(d => d.total_cached_tokens || 0);
+            const savedTokens = data.map(d => d.total_saved_tokens || 0);
+
+            const ctxTok = document.getElementById('tokensChart').getContext('2d');
+            tokensChart = new Chart(ctxTok, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: 'Prompt Tokens',
+                            data: promptTokens,
+                            backgroundColor: '#805ad5'
+                        },
+                        {
+                            label: 'Completion Tokens',
+                            data: completionTokens,
+                            backgroundColor: '#319795'
+                        },
+                        {
+                            label: 'Cached Tokens ⚡️',
+                            data: cachedTokens,
+                            backgroundColor: '#38a169'
+                        },
+                        {
+                            label: 'Saved Tokens ✨',
+                            data: savedTokens,
+                            backgroundColor: '#dd6b20'
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        title: { display: true, text: 'Token Usage & Cache Savings (30 Days)' }
+                    },
+                    scales: {
+                        x: { stacked: false },
                         y: { beginAtZero: true }
                     }
                 }
