@@ -2,7 +2,8 @@
  * Deep Module: ContextOptimizer
  * Consolidates git diff folding, ANSI escape code stripping,
  * 3-pass tool-call dependency pruning, error log tombstoning,
- * and token estimation behind a single optimizePayload interface.
+ * AST stacktrace frame pruning, cross-turn hash deduplication,
+ * and 3-tier threshold routing behind a single optimizePayload interface.
  */
 
 export interface OptimizationStats {
@@ -13,6 +14,8 @@ export interface OptimizationStats {
 	restoredCount: number;
 	savedTokens: number;
 	errorsTombstoned: number;
+	tier?: number;
+	middleCompacted?: boolean;
 }
 
 export interface OptimizationResult {
@@ -50,6 +53,134 @@ export class ContextOptimizer {
 	static stripAnsi(text: string): string {
 		if (!text || typeof text !== 'string') return text;
 		return text.replace(/[\u001b\x1b]\[[0-9;]*[a-zA-Z]/g, '');
+	}
+
+	/**
+	 * Collapses internal framework stacktrace frames (node_modules, node:internal) in error outputs > 15 lines.
+	 */
+	static pruneStacktraces(text: string): string {
+		if (!text || typeof text !== 'string') return text;
+		const lines = text.split('\n');
+		if (lines.length <= 15) return text;
+
+		const isStackLine = (line: string) => /^\s*at\s+/.test(line);
+		const isInternalFrame = (line: string) =>
+			isStackLine(line) &&
+			(line.includes('node_modules') ||
+				line.includes('node:internal') ||
+				line.includes('node:net') ||
+				line.includes('node:events'));
+
+		const outputLines: string[] = [];
+		let hiddenCount = 0;
+
+		for (let i = 0; i < lines.length; i++) {
+			const line = lines[i];
+			if (isInternalFrame(line)) {
+				hiddenCount++;
+			} else {
+				if (hiddenCount > 0) {
+					outputLines.push(`    ... [${hiddenCount} internal stack frames hidden for context efficiency] ...`);
+					hiddenCount = 0;
+				}
+				outputLines.push(line);
+			}
+		}
+		if (hiddenCount > 0) {
+			outputLines.push(`    ... [${hiddenCount} internal stack frames hidden for context efficiency] ...`);
+		}
+
+		return outputLines.join('\n');
+	}
+
+	/**
+	 * Hashes large text/code blocks (> 200 chars) and replaces duplicate occurrences in later turns with a pointer token.
+	 */
+	static deduplicateHashes(contents: any[]): { contents: any[]; duplicatesRemoved: number } {
+		if (!contents || !Array.isArray(contents)) return { contents: contents || [], duplicatesRemoved: 0 };
+
+		const seenHashes = new Map<string, number>();
+		let duplicatesRemoved = 0;
+
+		const fastHash = (str: string) => {
+			let hash = 0;
+			const norm = str.trim().replace(/\s+/g, ' ');
+			for (let i = 0; i < norm.length; i++) {
+				hash = (hash << 5) - hash + norm.charCodeAt(i);
+				hash |= 0;
+			}
+			return `h_${Math.abs(hash).toString(16)}`;
+		};
+
+		const pruned = contents.map((turn, turnIdx) => {
+			if (!turn || !Array.isArray(turn.parts)) return turn;
+			const newParts = turn.parts.map((part: any) => {
+				if (part && part.text && typeof part.text === 'string') {
+					let text = part.text;
+					const blocks = text.split(/\n\s*\n/);
+					if (blocks.length > 1) {
+						const updatedBlocks = blocks.map((block: string) => {
+							const trimmed = block.trim();
+							if (trimmed.length >= 200) {
+								const h = fastHash(trimmed);
+								if (seenHashes.has(h)) {
+									const prevTurnIdx = seenHashes.get(h)!;
+									duplicatesRemoved++;
+									return `[System Pruner: Duplicate text removed. Identical to block in Turn ${prevTurnIdx + 1} (Hash: #${h})]`;
+								} else {
+									seenHashes.set(h, turnIdx);
+								}
+							}
+							return block;
+						});
+						return { ...part, text: updatedBlocks.join('\n\n') };
+					} else if (text.trim().length >= 200) {
+						const trimmed = text.trim();
+						const h = fastHash(trimmed);
+						if (seenHashes.has(h)) {
+							const prevTurnIdx = seenHashes.get(h)!;
+							duplicatesRemoved++;
+							return {
+								...part,
+								text: `[System Pruner: Duplicate text removed. Identical to block in Turn ${prevTurnIdx + 1} (Hash: #${h})]`
+							};
+						} else {
+							seenHashes.set(h, turnIdx);
+						}
+					}
+				}
+				return part;
+			});
+			return { ...turn, parts: newParts };
+		});
+
+		return { contents: pruned, duplicatesRemoved };
+	}
+
+	/**
+	 * Compacts middle turns for Tier 2 (> 32k tokens), keeping Turn 0, Turn 1, and the last 8 turns intact.
+	 */
+	static compactMiddleTurns(contents: any[]): { contents: any[]; middleCompacted: boolean } {
+		if (!contents || contents.length <= 10) {
+			return { contents: contents || [], middleCompacted: false };
+		}
+
+		const head = contents.slice(0, 2);
+		const tail = contents.slice(-8);
+
+		const summaryTurn = {
+			role: 'model',
+			parts: [
+				{
+					text: `[Session Milestone Summary (Middle Turns 2-${contents.length - 8} Compacted for Token Efficiency): Active working state and recent conversation history preserved in turns below.]`
+				}
+			]
+		};
+
+		return {
+			contents: [...head, summaryTurn, ...tail],
+			middleCompacted: true
+		};
 	}
 
 	/**
@@ -123,15 +254,11 @@ export class ContextOptimizer {
 			};
 
 			for (const line of buf) {
-				if (line.startsWith('@@')) {
+				if (line.startsWith('@@') && chunkLines.length > 0) {
 					flushChunk(chunkLines);
-					chunkLines = [line];
-				} else if (line.startsWith('diff --git')) {
-					flushChunk(chunkLines);
-					chunkLines = [line];
-				} else {
-					chunkLines.push(line);
+					chunkLines = [];
 				}
+				chunkLines.push(line);
 			}
 			flushChunk(chunkLines);
 			return processed;
@@ -144,8 +271,8 @@ export class ContextOptimizer {
 					diffBuffer = [];
 				}
 				inDiff = true;
-				diffBuffer.push(line);
-			} else if (inDiff) {
+			}
+			if (inDiff) {
 				diffBuffer.push(line);
 			} else {
 				outputLines.push(line);
@@ -159,67 +286,64 @@ export class ContextOptimizer {
 	}
 
 	/**
-	 * Determines if a tool response object represents an execution failure.
+	 * Compacts a single part (text, functionCall, or functionResponse).
 	 */
-	static isFailureResponse(responseObj: any, responseStr: string): boolean {
-		if (responseObj && (responseObj.error || responseObj.failed || (responseObj.exitCode !== undefined && responseObj.exitCode !== 0))) {
-			return true;
-		}
-		const lowerStr = responseStr.toLowerCase();
-		if (responseStr.length > 300 && (
-			lowerStr.includes('error') ||
-			lowerStr.includes('failed') ||
-			lowerStr.includes('exception') ||
-			lowerStr.includes('npm err!') ||
-			lowerStr.includes('module not found') ||
-			lowerStr.includes('typescript error') ||
-			lowerStr.includes('stderr')
-		)) {
-			return true;
-		}
-		return false;
-	}
 	static compactPart(part: any): any {
 		if (!part) return part;
-		let updated = { ...part };
-		if (updated.text && typeof updated.text === 'string') {
-			updated.text = this.stripAnsi(updated.text);
-			updated.text = this.compactGitDiff(updated.text);
+
+		if (part.text && typeof part.text === 'string') {
+			let text = this.stripAnsi(part.text);
+			text = this.compactGitDiff(text);
+			text = this.pruneStacktraces(text);
+			return { ...part, text };
 		}
-		if (updated.functionResponse && updated.functionResponse.response) {
-			const res = updated.functionResponse.response;
-			if (typeof res === 'object') {
-				let updatedRes = { ...res };
-				if (updatedRes.stdout && typeof updatedRes.stdout === 'string') {
-					updatedRes.stdout = this.stripAnsi(updatedRes.stdout);
-					updatedRes.stdout = this.compactGitDiff(updatedRes.stdout);
-				}
-				if (updatedRes.output && typeof updatedRes.output === 'string') {
-					updatedRes.output = this.stripAnsi(updatedRes.output);
-					updatedRes.output = this.compactGitDiff(updatedRes.output);
-				}
-				if (updatedRes.response && typeof updatedRes.response === 'string') {
-					updatedRes.response = this.stripAnsi(updatedRes.response);
-					updatedRes.response = this.compactGitDiff(updatedRes.response);
-				}
-				updated = {
-					...updated,
+
+		if (part.functionResponse && part.functionResponse.response) {
+			const res = part.functionResponse.response;
+			if (res.output && typeof res.output === 'string') {
+				let output = this.stripAnsi(res.output);
+				output = this.compactGitDiff(output);
+				output = this.pruneStacktraces(output);
+				return {
+					...part,
 					functionResponse: {
-						...updated.functionResponse,
-						response: updatedRes
+						...part.functionResponse,
+						response: { ...res, output }
 					}
 				};
 			}
 		}
-		return updated;
+
+		return part;
 	}
 
 	/**
-	 * Optimizes the input Gemini contents payload by running multi-pass dependency analysis,
-	 * expired tool-call elimination, duplicate text folding, error tombstoning, and token estimation.
+	 * Checks if a function response indicates execution failure.
 	 */
-	static optimizePayload(contents: any[]): OptimizationResult {
-		if (!contents || !Array.isArray(contents) || contents.length === 0) {
+	static isFailureResponse(responseObj: any, responseStr: string): boolean {
+		if (!responseObj) return false;
+		if (responseObj.failed === true) return true;
+		if (typeof responseObj.exitCode === 'number' && responseObj.exitCode !== 0) return true;
+		if (responseObj.error) return true;
+
+		const lower = responseStr.toLowerCase();
+		if (
+			lower.includes('error:') ||
+			lower.includes('command failed') ||
+			lower.includes('no such file') ||
+			lower.includes('failed with status')
+		) {
+			return true;
+		}
+
+		return false;
+	}
+
+	/**
+	 * Main entry point: optimizes conversation history using 3-tier dynamic routing.
+	 */
+	static optimizePayload(contents: any[], options?: { forceTier?: number }): OptimizationResult {
+		if (!contents || !Array.isArray(contents)) {
 			return {
 				prunedContents: contents || [],
 				stats: {
@@ -229,16 +353,36 @@ export class ContextOptimizer {
 					duplicatesRemoved: 0,
 					restoredCount: 0,
 					savedTokens: 0,
-					errorsTombstoned: 0
+					errorsTombstoned: 0,
+					tier: 0,
+					middleCompacted: false
 				},
 				tokensEstimated: 0
 			};
 		}
 
 		const originalTokens = this.estimateTokens(contents);
+		let targetTier = 0;
+		if (options?.forceTier !== undefined) {
+			targetTier = options.forceTier;
+		} else if (originalTokens >= 32000) {
+			targetTier = 2;
+		} else if (originalTokens >= 16000) {
+			targetTier = 1;
+		}
+
+		let workingContents = contents;
+
+		// Apply Tier 2 Middle-Turn Compaction if >= 32k
+		let middleCompacted = false;
+		if (targetTier === 2) {
+			const compactRes = this.compactMiddleTurns(workingContents);
+			workingContents = compactRes.contents;
+			middleCompacted = compactRes.middleCompacted;
+		}
 
 		let originalPartsCount = 0;
-		for (const turn of contents) {
+		for (const turn of workingContents) {
 			if (turn && Array.isArray(turn.parts)) {
 				originalPartsCount += turn.parts.length;
 			}
@@ -257,8 +401,8 @@ export class ContextOptimizer {
 		}
 		const pairs: ToolCallPair[] = [];
 
-		for (let i = 0; i < contents.length; i++) {
-			const turn = contents[i];
+		for (let i = 0; i < workingContents.length; i++) {
+			const turn = workingContents[i];
 			if (!turn || !Array.isArray(turn.parts)) continue;
 
 			for (let j = 0; j < turn.parts.length; j++) {
@@ -268,8 +412,8 @@ export class ContextOptimizer {
 					const args = part.functionCall.args || {};
 
 					let matchFound = false;
-					for (let k = i + 1; k < contents.length; k++) {
-						const resTurn = contents[k];
+					for (let k = i + 1; k < workingContents.length; k++) {
+						const resTurn = workingContents[k];
 						if (!resTurn || !Array.isArray(resTurn.parts)) continue;
 
 						for (let l = 0; l < resTurn.parts.length; l++) {
@@ -318,13 +462,13 @@ export class ContextOptimizer {
 			}
 		}
 
-		// Pass 2: Duplicate Context Elimination
+		// Pass 2: Duplicate Text Removal
 		const seenText = new Set<string>();
 		const duplicateParts = new Map<string, string>();
-		let duplicatesRemoved = 0;
+		let duplicateTextCount = 0;
 
-		for (let i = 0; i < contents.length; i++) {
-			const turn = contents[i];
+		for (let i = 0; i < workingContents.length; i++) {
+			const turn = workingContents[i];
 			if (!turn || !Array.isArray(turn.parts)) continue;
 
 			for (let j = 0; j < turn.parts.length; j++) {
@@ -334,7 +478,7 @@ export class ContextOptimizer {
 						const norm = part.text.toLowerCase().replace(/\s+/g, ' ').trim();
 						if (seenText.has(norm)) {
 							duplicateParts.set(`${i}:${j}`, "[System Pruner: Duplicate text removed. Use 'read' offset/limit to re-inspect if needed.]");
-							duplicatesRemoved++;
+							duplicateTextCount++;
 						} else {
 							seenText.add(norm);
 						}
@@ -345,8 +489,8 @@ export class ContextOptimizer {
 
 		// Pass 3: Dependency Restoration
 		let survivingTextConcat = '';
-		for (let i = 0; i < contents.length; i++) {
-			const turn = contents[i];
+		for (let i = 0; i < workingContents.length; i++) {
+			const turn = workingContents[i];
 			if (!turn || !Array.isArray(turn.parts)) continue;
 
 			for (let j = 0; j < turn.parts.length; j++) {
@@ -360,22 +504,18 @@ export class ContextOptimizer {
 		}
 
 		let restoredCount = 0;
-		for (const pair of pairs) {
-			const callKey = `${pair.callTurnIdx}:${pair.callPartIdx}`;
-			if (removedParts.has(callKey)) {
+		for (let i = 0; i < pairs.length; i++) {
+			const pair = pairs[i];
+			if (removedParts.has(`${pair.callTurnIdx}:${pair.callPartIdx}`)) {
 				let shouldRestore = false;
-				if (pair.args && typeof pair.args === 'object') {
-					const pathValue = pair.args.path || pair.args.filename;
-					if (pathValue && typeof pathValue === 'string') {
-						const basename = pathValue.split('/').pop() || pathValue;
-						if (survivingTextConcat.includes(pathValue) || survivingTextConcat.includes(basename)) {
-							shouldRestore = true;
-						}
-					}
-					if (pair.args.command && typeof pair.args.command === 'string') {
-						if (survivingTextConcat.includes(pair.args.command)) {
-							shouldRestore = true;
-						}
+				const pathKey = pair.args?.path || pair.args?.filename || pair.args?.command || pair.args?.query;
+				if (pathKey) {
+					const baseName = pathKey.includes('/') ? pathKey.split('/').pop() : pathKey;
+					if (
+						survivingTextConcat.includes(pathKey) ||
+						(baseName && baseName.length > 3 && survivingTextConcat.includes(baseName))
+					) {
+						shouldRestore = true;
 					}
 				}
 
@@ -394,7 +534,7 @@ export class ContextOptimizer {
 		const latestSuccessPairIdx = new Map<string, number>();
 		for (let k = 0; k < pairs.length; k++) {
 			const pair = pairs[k];
-			const resPart = contents[pair.resTurnIdx].parts[pair.resPartIdx];
+			const resPart = workingContents[pair.resTurnIdx].parts[pair.resPartIdx];
 			if (resPart && resPart.functionResponse) {
 				const responseObj = resPart.functionResponse.response;
 				const responseStr = JSON.stringify(responseObj || {});
@@ -413,7 +553,7 @@ export class ContextOptimizer {
 
 			if (removedParts.has(resKey)) continue;
 
-			const resPart = contents[pair.resTurnIdx].parts[pair.resPartIdx];
+			const resPart = workingContents[pair.resTurnIdx].parts[pair.resPartIdx];
 			if (resPart && resPart.functionResponse) {
 				const responseObj = resPart.functionResponse.response;
 				const responseStr = JSON.stringify(responseObj || {});
@@ -428,7 +568,7 @@ export class ContextOptimizer {
 						shouldTombstone = true;
 					}
 
-					if (!shouldTombstone && originalTokens > 20000 && (contents.length - pair.resTurnIdx > 8)) {
+					if (!shouldTombstone && originalTokens > 20000 && (workingContents.length - pair.resTurnIdx > 8)) {
 						shouldTombstone = true;
 					}
 
@@ -445,12 +585,12 @@ export class ContextOptimizer {
 			}
 		}
 
-		// Build final pruned contents with merged adjacent roles
+		// Build final pruned contents
 		const prunedContents: any[] = [];
 		let finalPartsCount = 0;
 
-		for (let i = 0; i < contents.length; i++) {
-			const turn = contents[i];
+		for (let i = 0; i < workingContents.length; i++) {
+			const turn = workingContents[i];
 			if (!turn || !Array.isArray(turn.parts)) continue;
 
 			const survivingParts: any[] = [];
@@ -491,8 +631,13 @@ export class ContextOptimizer {
 		const prunedTokens = this.estimateTokens(prunedContents);
 		const savedTokens = Math.max(0, originalTokens - prunedTokens);
 
+		// Apply Hash Deduplication on final pruned contents
+		const dedupRes = this.deduplicateHashes(prunedContents);
+		const finalPrunedContents = dedupRes.contents;
+		const duplicatesRemoved = duplicateTextCount + dedupRes.duplicatesRemoved;
+
 		return {
-			prunedContents,
+			prunedContents: finalPrunedContents,
 			stats: {
 				originalParts: originalPartsCount,
 				finalParts: finalPartsCount,
@@ -500,7 +645,9 @@ export class ContextOptimizer {
 				duplicatesRemoved,
 				restoredCount,
 				savedTokens,
-				errorsTombstoned
+				errorsTombstoned,
+				tier: targetTier,
+				middleCompacted
 			},
 			tokensEstimated: prunedTokens
 		};
